@@ -108,7 +108,7 @@ jobs:
           patch = Path("patches/mesa/turnip-frame-diagnostics.patch")
           target = "diff --git a/src/freedreno/vulkan/tu_frame_diagnostic.h b/src/freedreno/vulkan/tu_frame_diagnostic.h"
           lines = patch.read_text().splitlines(keepends=True)
-          matches = [i for i, line in enumerate(lines) if line.rstrip("\\r\\n") == target]
+          matches = [i for i, line in enumerate(lines) if line.strip() == target]
 
           if len(matches) != 1:
               print("::warning::diagnostics patch layout changed; header fix skipped")
@@ -126,8 +126,8 @@ jobs:
                   print("::warning::diagnostics patch layout changed; header fix skipped")
 
               verified = patch.read_text().splitlines(keepends=True)
-              positions = [j for j, line in enumerate(verified) if line.rstrip("\\r\\n") == target]
-              if len(positions) == 1 and positions[0] + 1 < len(verified) and verified[positions[0] + 1].rstrip("\\r\\n") == "new file mode 100644":
+              positions = [j for j, line in enumerate(verified) if line.strip() == target]
+              if len(positions) == 1 and positions[0] + 1 < len(verified) and verified[positions[0] + 1].strip() == "new file mode 100644":
                   subprocess.run(["git", "apply", "--stat", str(patch)], check=True)
                   print("Mesa diagnostics patch header verified; git apply parser accepted patch")
           PY
