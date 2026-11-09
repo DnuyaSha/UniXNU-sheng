@@ -72,7 +72,7 @@ jobs:
                           if lines[j].startswith("--- /dev/null"):
                               header = "".join(lines[i+1:j])
                               if "new file mode " not in header:
-                                  out.insert(len(out)-1, "new file mode 100644\\n")
+                                  out.insert(len(out)-1, "new file mode 100644\n")
                                   dirty = True
                               break
                           j += 1
