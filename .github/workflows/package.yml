@@ -51,6 +51,37 @@ jobs:
           repository: UniXNU/uefi-sheng
           path: uefi-sheng
           submodules: recursive
+      - name: repair Mesa patch creation headers
+        working-directory: UniXNU
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          root = Path("patches/mesa")
+          changed = []
+          for patch in root.glob("*.patch"):
+              lines = patch.read_text().splitlines(keepends=True)
+              out = []
+              i = 0
+              dirty = False
+              while i < len(lines):
+                  line = lines[i]
+                  out.append(line)
+                  if line.startswith("diff --git "):
+                      j = i + 1
+                      while j < len(lines) and not lines[j].startswith("diff --git "):
+                          if lines[j].startswith("--- /dev/null"):
+                              header = "".join(lines[i+1:j])
+                              if "new file mode " not in header:
+                                  out.insert(len(out)-1, "new file mode 100644\\n")
+                                  dirty = True
+                              break
+                          j += 1
+                  i += 1
+              if dirty:
+                  patch.write_text("".join(out))
+                  changed.append(str(patch))
+          print("Repaired Mesa new-file headers:", ", ".join(changed) if changed else "none needed")
+          PY
       - name: tools
         run: |
           brew install dtc llvm lld cmake mtools ninja glslang shaderc spirv-tools bison pkgconf rustup blacktop/tap/ipsw
