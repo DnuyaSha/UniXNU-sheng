@@ -102,22 +102,34 @@ jobs:
         working-directory: UniXNU
         run: |
           python3 - <<'PY'
+          import subprocess
           from pathlib import Path
-          root = Path("patches/mesa")
-          changed = []
-          for patch in root.glob("*.patch"):
-              lines = patch.read_text().splitlines(keepends=True)
-              out = []
-              dirty = False
-              for i, line in enumerate(lines):
-                  out.append(line)
-                  if line.startswith("diff --git ") and i + 1 < len(lines) and lines[i + 1].startswith("--- /dev/null"):
-                      out.append("new file mode 100644\\n")
-                      dirty = True
-              if dirty:
-                  patch.write_text("".join(out))
-                  changed.append(str(patch))
-          print("Repaired Mesa new-file headers:", ", ".join(changed) if changed else "none needed")
+
+          patch = Path("patches/mesa/turnip-frame-diagnostics.patch")
+          target = "diff --git a/src/freedreno/vulkan/tu_frame_diagnostic.h b/src/freedreno/vulkan/tu_frame_diagnostic.h"
+          lines = patch.read_text().splitlines(keepends=True)
+          matches = [i for i, line in enumerate(lines) if line.rstrip("\\r\\n") == target]
+
+          if len(matches) != 1:
+              print("::warning::diagnostics patch layout changed; header fix skipped")
+          else:
+              i = matches[0]
+              if i + 1 >= len(lines):
+                  print("::warning::diagnostics patch has no creation header; header fix skipped")
+              elif lines[i + 1].startswith("new file mode "):
+                  print("header already present; nothing to do")
+              elif lines[i + 1].startswith("--- /dev/null"):
+                  lines.insert(i + 1, "new file mode 100644" + chr(10))
+                  patch.write_text("".join(lines))
+                  print('inserted missing "new file mode 100644" header')
+              else:
+                  print("::warning::diagnostics patch layout changed; header fix skipped")
+
+              verified = patch.read_text().splitlines(keepends=True)
+              positions = [j for j, line in enumerate(verified) if line.rstrip("\\r\\n") == target]
+              if len(positions) == 1 and positions[0] + 1 < len(verified) and verified[positions[0] + 1].rstrip("\\r\\n") == "new file mode 100644":
+                  subprocess.run(["git", "apply", "--stat", str(patch)], check=True)
+                  print("Mesa diagnostics patch header verified; git apply parser accepted patch")
           PY
       - name: tools
         run: |
