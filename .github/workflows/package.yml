@@ -43,7 +43,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: UniXNU/UniXNU
-          ref: 82b847c4ac3f68a57024b3082ffa3a03442defd9 # Wi-Fi runtime and Data firmware integration
+          ref: 95ad78129203442c3c14c02336303adbddf8d0a3 # official UniXNU main; candidate upgrade, validate with package CI
           path: UniXNU
           submodules: recursive
       - uses: actions/checkout@v4
