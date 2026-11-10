@@ -2,4 +2,4 @@
 kind = "soc"
 name = "sm8550"
 git = "https://github.com/UniXNU/UniXNU-sm8550-common.git"
-commit = "009512d62acc907189648aa51f2066d85940e97d"
+commit = "97665e28578483082b674e8375a8fa65f4cf49cf"
