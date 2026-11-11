@@ -47,6 +47,15 @@ jobs:
               if q.is_file() and OLD in q.read_text():
                   q.write_text(q.read_text().replace(OLD, NEW))
                   print('patched:', f)
+          # 3) fetch-sources.py passes leading-slash patterns to cone-mode
+          #    sparse-checkout (git >= 2.26 rejects them). Use non-cone set.
+          q = Path('device/drivers/Ath12kWifi/tools/fetch-sources.py')
+          s = q.read_text()
+          old = '"sparse-checkout", "add", *source["paths"]'
+          new = '"sparse-checkout", "set", "--no-cone", *source["paths"]'
+          assert old in s, 'sparse-checkout call not found in fetch-sources.py'
+          q.write_text(s.replace(old, new, 1))
+          print('patched: fetch-sources.py sparse-checkout -> set --no-cone')
           print('patch done')
           PY
       - name: Fetch proprietary firmware (public mirror, sha256-verified)
