@@ -172,6 +172,61 @@ jobs:
           p.write_text(t)
           print('patched: stub all undefined symbols + print LTO log tail on failure')
           PY
+      - name: patch kernel link inputs
+        # The 27 bring-up patch calls optional hooks that the iPadOS archive set does not
+        # compile (they are weak_import with runtime fallbacks in the device sources).
+        # arm64e links reject undefined weak symbols, so provide typed stubs, following
+        # the stubbing design of UniXNU/UniXNU#147. Inject through the official
+        # CONFIG_XNU_EXTRA_LD_ARCHIVES mechanism.
+        run: |
+          python3 - <<'PY'
+          import os, subprocess
+          from pathlib import Path
+          ws = Path(os.environ['GITHUB_WORKSPACE'])
+          stubs = ws / 'ci-stubs'
+          stubs.mkdir(exist_ok=True)
+          (stubs / 'ci-stubs.c').write_text(r"""
+          #include <stddef.h>
+          #include <stdint.h>
+          /* BootLog.c weak_import counters (volatile uint64_t) */
+          volatile uint64_t native_data_io_writes;
+          volatile uint64_t native_data_io_write_bytes;
+          volatile uint64_t native_data_io_write_ticks;
+          volatile uint64_t native_data_timer_flushes;
+          /* LegacyDisplayProbe.cpp weak_import data */
+          volatile uint32_t native_legacy_formats[10];
+          const unsigned native_legacy_request_layout[6] = {17, 81, 792, 804, 816, 2624};
+          /* Optional probes (weak_import, macOS-only in the sources) */
+          void sheng_ethernet_probe(void) {}
+          void sheng_software_aes_probe(void) {}
+          /* Bluetooth firmware reader: report unavailable; the probe handles the error */
+          int sheng_bt_firmware_read(const char *name, uint8_t **data, size_t *size) {
+              (void)name; if (data) *data = 0; if (size) *size = 0; return 2;
+          }
+          void sheng_bt_firmware_release(uint8_t *data, size_t size) { (void)data; (void)size; }
+          /* Optional stage/policy hooks referenced by the xnu bring-up patches.
+             Zero-valued data keeps the sources' null checks on the fallback path. */
+          uint64_t native_ram_block_gpu_addon;
+          uint64_t native_ram_block_volume_seed;
+          uint64_t native_source_storage_start;
+          uint64_t native_verified_block_manifest_sha384;
+          uint64_t native_verified_block_root_authorized;
+          uint64_t native_verified_block_volume_device;
+          uint64_t sheng_boot_watchdog_policy;
+          """)
+          sdk = subprocess.check_output(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'], text=True).strip()
+          subprocess.run(['xcrun', 'clang', '-target', 'arm64e-apple-ios27.0', '-isysroot', sdk,
+                          '-c', str(stubs / 'ci-stubs.c'), '-o', str(stubs / 'ci-stubs.o')], check=True)
+          subprocess.run(['xcrun', 'ar', 'rcs', str(stubs / 'libCiStubs.a'),
+                          str(stubs / 'ci-stubs.o')], check=True)
+          cfg = ws / 'device' / 'configs' / 'sheng_ipados27_defconfig'
+          t = cfg.read_text()
+          old = 'CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/sheng-source-storage/libShengSourceStorage.a"'
+          assert t.count(old) == 1, 'EXTRA_LD_ARCHIVES line changed upstream'
+          new = old[:-1] + ' -Wl,-force_load,' + str(stubs / 'libCiStubs.a') + '"'
+          cfg.write_text(t.replace(old, new, 1))
+          print('staged typed stubs and patched defconfig:', new)
+          PY
       - name: tools
         run: |
           brew install dtc llvm lld cmake mtools ninja glslang shaderc spirv-tools bison pkgconf rustup blacktop/tap/ipsw
@@ -261,7 +316,7 @@ jobs:
           fi
           scripts/package.sh "${args[@]}" || {
             echo "=== build log tail on failure ==="
-            find ../UniXNU/out -name 'lto-build.log' -o -name 'archive-2*.log' 2>/dev/null | while read -r f; do
+            find ../UniXNU/out -name 'lto-build.log' -o -name 'archive-2*.log' -o -name 'kernel.log' 2>/dev/null | while read -r f; do
               echo "--- $f ---"; tail -n 120 "$f"
             done
             exit 1
