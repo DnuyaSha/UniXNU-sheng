@@ -52,27 +52,45 @@ jobs:
           path: uefi-sheng
           submodules: recursive
       - name: fetch wifi firmware
-        # WCN7850 firmware binaries are intentionally not committed. Fetch the
-        # pinned files in clean CI and verify every byte against the manifest.
+        # WCN7850 firmware binaries are intentionally not committed. The manifest pins the
+        # linux-firmware 20261019 tag (recorded with SHA-256 in timmydo/td recipes/src/source_pins.rs,
+        # and by FreeBSD ports / Armbian firmware). Try the pinned tag first, then verified mirrors,
+        # and fail closed unless the size and SHA-256 of every file match the manifest.
         run: |
           python3 - <<'PY'
           import hashlib, json, pathlib, subprocess
           root = pathlib.Path('device/firmware/wcn7850')
           manifest = json.loads((root / 'manifest.json').read_text())['files']
-          base = 'https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/ath12k/WCN7850/hw2.0/'
           allowed = {'amss.bin', 'm3.bin', 'board-2.bin'}
           if set(manifest) != allowed:
               raise SystemExit(f'unexpected WCN7850 manifest entries: {sorted(manifest)}')
+          gitlab = 'https://gitlab.com/kernel-firmware/linux-firmware/-/raw/20261019/ath12k/WCN7850/hw2.0/'
+          armbian = 'https://raw.githubusercontent.com/armbian/firmware/master/ath12k/WCN7850/hw2.0/'
+          kernel = 'https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/ath12k/WCN7850/hw2.0/'
+          bdf = kernel + 'board-2.bin?id=575bbe3f83565d18caa73e9b9458f754dd286f48'
+          urls = {
+              'amss.bin': [gitlab + 'amss.bin', armbian + 'amss.bin', kernel + 'amss.bin'],
+              'm3.bin': [gitlab + 'm3.bin', armbian + 'm3.bin', kernel + 'm3.bin'],
+              'board-2.bin': [gitlab + 'board-2.bin', bdf, kernel + 'board-2.bin'],
+          }
           for name, expected in manifest.items():
               target = root / name
-              url = base + name
-              print(f'fetching {url}', flush=True)
-              subprocess.run(['curl', '-fsSL', '--retry', '3', url, '-o', str(target)], check=True)
-              data = target.read_bytes()
-              digest = hashlib.sha256(data).hexdigest()
-              if len(data) != expected['bytes'] or digest != expected['sha256']:
-                  raise SystemExit(f'WCN7850 firmware differs from manifest: {name}')
-              print(f'fetched {name}: {len(data)} bytes, sha256 OK', flush=True)
+              ok = False
+              for url in urls[name]:
+                  print(f'trying {url}', flush=True)
+                  try:
+                      subprocess.run(['curl', '-fsSL', '--retry', '3', '--max-time', '240',
+                                      url, '-o', str(target)], check=True)
+                      data = target.read_bytes()
+                      if len(data) == expected['bytes'] and hashlib.sha256(data).hexdigest() == expected['sha256']:
+                          print(f'fetched {name}: {len(data)} bytes, sha256 OK', flush=True)
+                          ok = True
+                          break
+                      print(f'  mismatch: {len(data)} bytes', flush=True)
+                  except subprocess.CalledProcessError as error:
+                      print(f'  download failed: {error}', flush=True)
+              if not ok:
+                  raise SystemExit('WCN7850 firmware unavailable or differs from manifest: ' + name)
           PY
       - name: fetch wifi sources
         # prepare-supplicant.py checks deps/ before the kernel build stage can
