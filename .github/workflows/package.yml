@@ -149,6 +149,29 @@ jobs:
                   subprocess.run(["git", "apply", "--stat", str(patch)], check=True)
                   print("Mesa diagnostics patch header verified; git apply parser accepted patch")
           PY
+      - name: patch fileset reference builder
+        # Official #147 stubs only native_* hooks, but the 27 bring-up patch also calls
+        # sheng_* hooks (visible in the bootstrap link log). The comparison kernel never
+        # runs -- prelink only reads its layout -- so stub every undefined symbol.
+        # Print the LTO log tail if the second link still fails, for the next diagnosis.
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('UniXNU/scripts/build-fileset-release-reference.py')
+          t = p.read_text()
+          old = '_(?:native_[a-z0-9_]+|boot_log_rounds)'
+          new = '_[A-Za-z0-9_]+'
+          assert t.count(old) == 1, 'stub regex changed upstream'
+          t = t.replace(old, new, 1)
+          tail = '    if result.returncode:\n        raise SystemExit(result.returncode)'
+          diag = ('    if result.returncode:\n'
+                  "        print((output / f'{mode}-build.log').read_text()[-8000:], flush=True)\n"
+                  '        raise SystemExit(result.returncode)')
+          assert t.count(tail) == 1, 'failure branch changed upstream'
+          t = t.replace(tail, diag, 1)
+          p.write_text(t)
+          print('patched: stub all undefined symbols + print LTO log tail on failure')
+          PY
       - name: tools
         run: |
           brew install dtc llvm lld cmake mtools ninja glslang shaderc spirv-tools bison pkgconf rustup blacktop/tap/ipsw
@@ -236,7 +259,13 @@ jobs:
           if [ "$OS_PROFILE" = 27 ] && [ "$INIT_DATA" = true ]; then
             args+=(--init-data)
           fi
-          scripts/package.sh "${args[@]}"
+          scripts/package.sh "${args[@]}" || {
+            echo "=== build log tail on failure ==="
+            find ../UniXNU/out -name 'lto-build.log' -o -name 'archive-2*.log' 2>/dev/null | while read -r f; do
+              echo "--- $f ---"; tail -n 120 "$f"
+            done
+            exit 1
+          }
       - uses: actions/cache/save@v4
         if: always() && inputs.os == '27' && steps.data-cache.outputs.cache-hit != 'true' && hashFiles('UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/data.dbr') != ''
         with:
