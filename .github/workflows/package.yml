@@ -51,6 +51,86 @@ jobs:
           repository: UniXNU/uefi-sheng
           path: uefi-sheng
           submodules: recursive
+      - name: fetch wifi firmware
+        # WCN7850 firmware binaries are intentionally not committed. Fetch the
+        # pinned files in clean CI and verify every byte against the manifest.
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, pathlib, subprocess
+          root = pathlib.Path('device/firmware/wcn7850')
+          manifest = json.loads((root / 'manifest.json').read_text())['files']
+          base = 'https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/ath12k/WCN7850/hw2.0/'
+          allowed = {'amss.bin', 'm3.bin', 'board-2.bin'}
+          if set(manifest) != allowed:
+              raise SystemExit(f'unexpected WCN7850 manifest entries: {sorted(manifest)}')
+          for name, expected in manifest.items():
+              target = root / name
+              url = base + name
+              print(f'fetching {url}', flush=True)
+              subprocess.run(['curl', '-fsSL', '--retry', '3', url, '-o', str(target)], check=True)
+              data = target.read_bytes()
+              digest = hashlib.sha256(data).hexdigest()
+              if len(data) != expected['bytes'] or digest != expected['sha256']:
+                  raise SystemExit(f'WCN7850 firmware differs from manifest: {name}')
+              print(f'fetched {name}: {len(data)} bytes, sha256 OK', flush=True)
+          PY
+      - name: fetch wifi sources
+        # prepare-supplicant.py checks deps/ before the kernel build stage can
+        # fetch these locked sources. Fetch them here on a clean CI checkout.
+        # The pinned upstream script passes leading-slash paths and a mix of
+        # directories/files to sparse-checkout. Patch that exact call, fail
+        # closed if upstream changes it, then verify all locked sources.
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          script = pathlib.Path('device/drivers/Ath12kWifi/tools/fetch-sources.py')
+          source = script.read_text()
+          old = '"sparse-checkout", "add", *source["paths"]'
+          new = '"sparse-checkout", "add", "--skip-checks", *paths'
+          old_count, new_count = source.count(old), source.count(new)
+          if old_count == 1:
+              source = source.replace(old, new, 1)
+              script.write_text(source)
+              print('patched fetch-sources.py: slash-stripped paths with --skip-checks')
+          elif old_count == 0 and new_count == 1:
+              print('fetch-sources.py already has the expected sparse-checkout fix')
+          else:
+              raise SystemExit(f'unexpected fetch-sources.py layout: old={old_count}, fixed={new_count}')
+          PY
+          python3 device/drivers/Ath12kWifi/tools/fetch-sources.py
+      - name: repair Mesa patch creation headers
+        working-directory: UniXNU
+        run: |
+          python3 - <<'PY'
+          import subprocess
+          from pathlib import Path
+
+          patch = Path("patches/mesa/turnip-frame-diagnostics.patch")
+          target = "diff --git a/src/freedreno/vulkan/tu_frame_diagnostic.h b/src/freedreno/vulkan/tu_frame_diagnostic.h"
+          lines = patch.read_text().splitlines(keepends=True)
+          matches = [i for i, line in enumerate(lines) if line.strip() == target]
+
+          if len(matches) != 1:
+              print("::warning::diagnostics patch layout changed; header fix skipped")
+          else:
+              i = matches[0]
+              if i + 1 >= len(lines):
+                  print("::warning::diagnostics patch has no creation header; header fix skipped")
+              elif lines[i + 1].startswith("new file mode "):
+                  print("header already present; nothing to do")
+              elif lines[i + 1].startswith("--- /dev/null"):
+                  lines.insert(i + 1, "new file mode 100644" + chr(10))
+                  patch.write_text("".join(lines))
+                  print('inserted missing "new file mode 100644" header')
+              else:
+                  print("::warning::diagnostics patch layout changed; header fix skipped")
+
+              verified = patch.read_text().splitlines(keepends=True)
+              positions = [j for j, line in enumerate(verified) if line.strip() == target]
+              if len(positions) == 1 and positions[0] + 1 < len(verified) and verified[positions[0] + 1].strip() == "new file mode 100644":
+                  subprocess.run(["git", "apply", "--stat", str(patch)], check=True)
+                  print("Mesa diagnostics patch header verified; git apply parser accepted patch")
+          PY
       - name: tools
         run: |
           brew install dtc llvm lld cmake mtools ninja glslang shaderc spirv-tools bison pkgconf rustup blacktop/tap/ipsw
@@ -122,6 +202,10 @@ jobs:
           if not path.is_file() and os.environ['INIT_DATA'] != 'true':
               raise SystemExit('No saved seed. Supply the ORIGINAL seed for an existing installation, or select init_data for a FIRST installation')
           PY
+      - name: fetch proprietary firmware
+        # The keyboard MCU image and friends are not committed. scripts/extract-files.py
+        # pulls them from the public mirror named by @fetch and verifies every SHA-256.
+        run: python3 device/scripts/extract-files.py
       - name: package
         working-directory: device
         env:
