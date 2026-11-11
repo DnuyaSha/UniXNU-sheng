@@ -23,6 +23,11 @@ on:
       data_seed_sha256:
         description: "Required SHA-256 when data_seed_url is supplied"
         type: string
+      framework:
+        description: "Framework baseline; upstream-main carries every merged fix, ci-newest is the maintainer CI baseline recorded in the device docs"
+        type: choice
+        options: ["upstream-main", "ci-newest", "original-pin"]
+        default: "upstream-main"
 
 permissions:
   contents: read
@@ -42,8 +47,14 @@ jobs:
           submodules: recursive
       - uses: actions/checkout@v4
         with:
-          repository: UniXNU/UniXNU
-          ref: 82b847c4ac3f68a57024b3082ffa3a03442defd9 # Wi-Fi runtime and Data firmware integration
+          # upstream-main: UniXNU/UniXNU main, 162 merged commits past the old pin
+          #   (Mesa new-file header, boot_cache_input_capture stub, source-storage /
+          #    archive / profile fixes, XNU_EXTRA_LD_ARCHIVES link hook).
+          # ci-newest: Soneoylys/UniXNU-fork@00db0e02, the baseline the official
+          #   device records sheng-ks114514 / sheng-soneoylys name for packaging.
+          # original-pin: the 2026-11-03 pin the official workflow still carries.
+          repository: ${{ inputs.framework == 'ci-newest' && 'Soneoylys/UniXNU-fork' || 'UniXNU/UniXNU' }}
+          ref: ${{ inputs.framework == 'ci-newest' && '00db0e02b1a8d571e589b9cf74785c2c36643790' || (inputs.framework == 'original-pin' && '82b847c4ac3f68a57024b3082ffa3a03442defd9' || '9248bdac8f06f6faa47a03304ad4e40cde5d5296') }}
           path: UniXNU
           submodules: recursive
       - uses: actions/checkout@v4
@@ -93,29 +104,44 @@ jobs:
                   raise SystemExit('WCN7850 firmware unavailable or differs from manifest: ' + name)
           PY
       - name: fetch wifi sources
-        # prepare-supplicant.py checks deps/ before the kernel build stage can
-        # fetch these locked sources. Fetch them here on a clean CI checkout.
-        # The pinned upstream script passes leading-slash paths and a mix of
-        # directories/files to sparse-checkout. Patch that exact call, fail
-        # closed if upstream changes it, then verify all locked sources.
+        # Official device records (sheng-ks114514.md / sheng-soneoylys.md) and their
+        # package.yml: pre-clone the locked linux/freebsd trees in no-cone sparse mode
+        # before running the pinned fetch-sources.py, because the runner's git rejects
+        # that script's leading-slash sparse-checkout patterns in cone mode. Keep the
+        # source patch as a second layer, and verify the locked sources afterwards.
         run: |
           python3 - <<'PY'
-          import pathlib
-          script = pathlib.Path('device/drivers/Ath12kWifi/tools/fetch-sources.py')
-          source = script.read_text()
+          import json, pathlib, subprocess
+          base = pathlib.Path('device/drivers/Ath12kWifi')
+          lock = json.loads((base / 'tools/source-lock.json').read_text())
+          for name in ('linux', 'freebsd'):
+              source, directory = lock[name], base / 'deps' / name
+              if (directory / '.git').exists():
+                  print(name, 'already cloned')
+                  continue
+              subprocess.run(['git', 'clone', '--depth', '1', '--branch', source['ref'],
+                              '--filter=blob:none', '--sparse', source['url'], str(directory)], check=True)
+              subprocess.run(['git', '-C', str(directory), 'sparse-checkout', 'set',
+                              '--no-cone', '/.unixnu-placeholder'], check=True)
+              print(name, 'cloned in no-cone sparse mode')
+          script = base / 'tools/fetch-sources.py'
+          src = script.read_text()
           old = '"sparse-checkout", "add", *source["paths"]'
           new = '"sparse-checkout", "add", "--skip-checks", *paths'
-          old_count, new_count = source.count(old), source.count(new)
-          if old_count == 1:
-              source = source.replace(old, new, 1)
-              script.write_text(source)
+          if src.count(old) == 1:
+              script.write_text(src.replace(old, new, 1))
               print('patched fetch-sources.py: slash-stripped paths with --skip-checks')
-          elif old_count == 0 and new_count == 1:
+          elif src.count(new) == 1:
               print('fetch-sources.py already has the expected sparse-checkout fix')
           else:
-              raise SystemExit(f'unexpected fetch-sources.py layout: old={old_count}, fixed={new_count}')
+              # The no-cone clones above already remove the cone-mode failure; the
+              # pinned script layout changing is no longer fatal.
+              print('::warning::fetch-sources.py layout changed; relying on no-cone clones')
+          subprocess.run(['python3', str(script)], check=True)
+          for name in ('linux', 'freebsd'):
+              assert (base / 'deps' / name / '.git').exists(), f'missing locked source: {name}'
+          print('locked Wi-Fi sources ready')
           PY
-          python3 device/drivers/Ath12kWifi/tools/fetch-sources.py
       - name: repair Mesa patch creation headers
         working-directory: UniXNU
         run: |
@@ -150,27 +176,43 @@ jobs:
                   print("Mesa diagnostics patch header verified; git apply parser accepted patch")
           PY
       - name: patch fileset reference builder
-        # Official #147 stubs only native_* hooks, but the 27 bring-up patch also calls
-        # sheng_* hooks (visible in the bootstrap link log). The comparison kernel never
-        # runs -- prelink only reads its layout -- so stub every undefined symbol.
-        # Print the LTO log tail if the second link still fails, for the next diagnosis.
+        # Official #147 stubs native_* / boot_log_rounds; 1c9261527e later added
+        # boot_cache_input_capture. Neither covers the sheng_* / cs_* hooks the 27
+        # bring-up patch calls, so widen the stub regex to every undefined symbol.
+        # The comparison kernel never runs -- prelink only reads its layout.
+        # Written to accept both official regex forms and to be safely re-runnable.
         run: |
           python3 - <<'PY'
           from pathlib import Path
           p = Path('UniXNU/scripts/build-fileset-release-reference.py')
           t = p.read_text()
-          old = '_(?:native_[a-z0-9_]+|boot_log_rounds)'
-          new = '_[A-Za-z0-9_]+'
-          assert t.count(old) == 1, 'stub regex changed upstream'
-          t = t.replace(old, new, 1)
+          variants = [
+              '_(?:native_[a-z0-9_]+|boot_log_rounds)',
+              '_(?:native_[a-z0-9_]+|boot_log_rounds|boot_cache_input_capture)',
+          ]
+          wide = '_[A-Za-z0-9_]+'
+          if t.count(wide) >= 1:
+              print('stub regex already widened; nothing to do')
+          else:
+              for v in variants:
+                  if t.count(v) == 1:
+                      t = t.replace(v, wide, 1)
+                      print('widened official stub regex:', v, '->', wide)
+                      break
+              else:
+                  raise SystemExit('stub regex changed upstream; inspect before running')
           tail = '    if result.returncode:\n        raise SystemExit(result.returncode)'
           diag = ('    if result.returncode:\n'
                   "        print((output / f'{mode}-build.log').read_text()[-8000:], flush=True)\n"
                   '        raise SystemExit(result.returncode)')
-          assert t.count(tail) == 1, 'failure branch changed upstream'
-          t = t.replace(tail, diag, 1)
+          if 'lto-build.log' in t or "print((output / f'{mode}-build.log')" in t:
+              print('LTO log tail diagnostic already present')
+          elif t.count(tail) == 1:
+              t = t.replace(tail, diag, 1)
+              print('added LTO log tail diagnostic on failure')
+          else:
+              print('::warning::failure branch changed; diagnostic not inserted')
           p.write_text(t)
-          print('patched: stub all undefined symbols + print LTO log tail on failure')
           PY
       - name: patch kernel link inputs
         # The 27 bring-up patch calls optional diagnostic hooks that the iPadOS archive
@@ -253,14 +295,34 @@ jobs:
                           str(stubs / 'ci-stubs.o')], check=True)
           cfg = dev / 'configs' / 'sheng_ipados27_defconfig'
           t = cfg.read_text()
-          old = 'CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/sheng-source-storage/libShengSourceStorage.a"'
-          if t.count(old) == 1:
-              new = old[:-1] + ' -Wl,-force_load,' + str(stubs / 'libCiStubs.a') + '"'
-              cfg.write_text(t.replace(old, new, 1))
-              print('patched defconfig', flush=True)
+          stub_flag = '-Wl,-force_load,' + str(stubs / 'libCiStubs.a')
+          if stub_flag in t:
+              print('defconfig already carries the stub library', flush=True)
           else:
-              assert 'libCiStubs.a' in t, 'EXTRA_LD_ARCHIVES missing stub library'
-              print('defconfig already patched', flush=True)
+              m = re.search(r'^CONFIG_XNU_EXTRA_LD_ARCHIVES="([^"]*)"\s*$', t, re.M)
+              if m:
+                  replacement = 'CONFIG_XNU_EXTRA_LD_ARCHIVES="' + m.group(1).rstrip() + ' ' + stub_flag + '"'
+                  t = t[:m.start()] + replacement + t[m.end():]
+                  print('appended stub library to the existing EXTRA_LD_ARCHIVES line', flush=True)
+              else:
+                  t = t.rstrip() + '\nCONFIG_XNU_EXTRA_LD_ARCHIVES="' + stub_flag + '"\n'
+                  print('created EXTRA_LD_ARCHIVES line in defconfig', flush=True)
+              cfg.write_text(t)
+
+          # Older framework baselines (e.g. the ci-newest maintainer fork) do not
+          # consume XNU_EXTRA_LD_ARCHIVES yet. Add the same one-line hook upstream
+          # main carries, so the stub library reaches the kernel link on every baseline.
+          baseline = ws / 'UniXNU' / 'scripts' / 'build-xnu-4k-baseline.sh'
+          b = baseline.read_text()
+          if 'XNU_EXTRA_LD_ARCHIVES' in b:
+              print('baseline already consumes XNU_EXTRA_LD_ARCHIVES')
+          else:
+              anchor = 'KERNEL_EXTRA_ARCHIVES="-L$KERNEL_SDKROOT/usr/local/lib/kernel -lfirehose_kernel $CRYPTO_ARCHIVE"'
+              if b.count(anchor) != 1:
+                  raise SystemExit('cannot inject stub archive: baseline anchor missing')
+              b = b.replace(anchor, anchor + '\n  KERNEL_EXTRA_ARCHIVES="$KERNEL_EXTRA_ARCHIVES ${XNU_EXTRA_LD_ARCHIVES:-}"', 1)
+              baseline.write_text(b)
+              print('added XNU_EXTRA_LD_ARCHIVES consumption to baseline')
           PY
       - name: tools
         run: |
@@ -334,9 +396,14 @@ jobs:
               raise SystemExit('No saved seed. Supply the ORIGINAL seed for an existing installation, or select init_data for a FIRST installation')
           PY
       - name: fetch proprietary firmware
-        # The keyboard MCU image and friends are not committed. scripts/extract-files.py
-        # pulls them from the public mirror named by @fetch and verifies every SHA-256.
-        run: python3 device/scripts/extract-files.py
+        # docs/zh/devices/sheng.md:480 and the maintainer CI workflows explicitly run
+        # the Keyboard section first: build-gop-legacy-display-27.py needs
+        # nanosic/MCU_Upgrade.bin in .cache/firmware. Then run the full extraction so
+        # the Novatek touch image and every other @fetch entry are present too.
+        working-directory: device
+        run: |
+          python3 scripts/extract-files.py --section Keyboard
+          python3 scripts/extract-files.py
       - name: package
         working-directory: device
         env:
@@ -372,6 +439,30 @@ jobs:
           path: |
             UniXNU/out/sheng/*/*/runtime/data.dbr
             UniXNU/out/sheng/*/*/runtime/inputs.json
+      - name: redact build logs
+        # From the maintainer CI workflow: keep the LTO / archive logs even when the
+        # package step fails, so a later failure never needs another 1-hour run just
+        # to see the error. The platform seed is masked before upload.
+        if: always()
+        env:
+          SEED: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
+        run: |
+          mkdir -p build-logs
+          for d in UniXNU/out/sheng/*/*/logs; do
+            [ -d "$d" ] && cp -R "$d"/. build-logs/
+          done
+          for f in UniXNU/out/sheng/*/*/tree/build/xnu/fileset-reference/*/*-build.log; do
+            [ -f "$f" ] && cp "$f" "build-logs/fileset-reference-$(basename "$(dirname "$f")")-$(basename "$f")"
+          done
+          find build-logs -type f -exec sed -i '' "s/$SEED/********/g" {} + 2>/dev/null || true
+      - name: build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ inputs.os }}
+          retention-days: 1
+          if-no-files-found: ignore
+          path: build-logs
       - name: images
         uses: actions/upload-artifact@v4
         with:
