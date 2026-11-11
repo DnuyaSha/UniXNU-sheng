@@ -30,6 +30,7 @@ jobs:
         run: |
           git -C device submodule update --init --depth 1 drivers/Ath12kWifi
           python3 - <<'PY'
+          import shutil, subprocess
           from pathlib import Path
           # 1) REFERENCES[kernel] lacks IOHIDFamily -> refer/IOHIDFamily never fetched
           p = Path('scripts/unixnu/cli.py')
@@ -57,6 +58,43 @@ jobs:
           assert old in s, 'sparse-checkout call not found in fetch-sources.py'
           q.write_text(s.replace(old, new, 1))
           print('patched: fetch-sources.py sparse-checkout -> set --no-cone')
+          # 4) The ipados OS patch series is stale: device/framework code calls xnu hooks
+          #    (cs_native4k_*, ml_static_mfree_prepare, iokit_physical_descriptor_close_notify)
+          #    that only the macOS profile's shared patches define. Add them in macos order.
+          shared = ['cshash-native4k-stats.patch', 'payload-addon-release.patch',
+                    'cshash-native4k-parallel.patch', 'cshash-native4k-lazy.patch',
+                    'cssha-digest-time.patch', 'gpupool-device-pager-close.patch',
+                    'memwired-kc-segment-release.patch']
+          src = Path('profiles/os/macos-27.3-26C5035r/patches/xnu-12377')
+          dst = Path('profiles/os/ipados-27.0.1-24A446/patches/xnu-12377')
+          dst.mkdir(exist_ok=True)
+          series = Path('profiles/os/ipados-27.0.1-24A446/patches/xnu/series')
+          lines = series.read_text().rstrip('\n') + '\n'
+          for name in shared:
+              shutil.copy(src / name, dst / name)
+              lines += f'../xnu-12377/{name}\n'
+          series.write_text(lines)
+          print('patched: ipados OS series +7 shared xnu-12377 patches')
+          # 5) weak_import probes: arm64e kernel links reject undefined weak symbols.
+          #    CI stubs restore the documented non-macOS fallbacks (empty probes, iOS17 layout).
+          Path('ci-stubs').mkdir(exist_ok=True)
+          Path('ci-stubs/ci-stubs.c').write_text(
+              '/* CI shims: probes are weak_import and macOS-only in the sources. */\n'
+              'void sheng_ethernet_probe(void) {}\n'
+              'void sheng_software_aes_probe(void) {}\n'
+              'const unsigned native_legacy_request_layout[6] = {17, 81, 792, 804, 816, 2624};\n')
+          sdk = subprocess.run(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'],
+                               capture_output=True, text=True, check=True).stdout.strip()
+          subprocess.run(['xcrun', 'clang', '-target', 'arm64e-apple-ios27.0', '-isysroot', sdk,
+                          '-c', 'ci-stubs/ci-stubs.c', '-o', 'ci-stubs/ci-stubs.o'], check=True)
+          subprocess.run(['xcrun', 'ar', 'rcs', 'ci-stubs/libCiStubs.a', 'ci-stubs/ci-stubs.o'], check=True)
+          cfg = Path('device/configs/sheng_ipados27_defconfig')
+          t = cfg.read_text()
+          old = '"-Wl,-force_load,{tree}/build/sheng-source-storage/libShengSourceStorage.a"'
+          new = (old[:-1] + ' -Wl,-force_load,' + str(Path('ci-stubs/libCiStubs.a').resolve()) + '"')
+          assert old in t, 'EXTRA_LD_ARCHIVES line not found in sheng_ipados27_defconfig'
+          cfg.write_text(t.replace(old, new, 1))
+          print('patched: defconfig EXTRA_LD_ARCHIVES += libCiStubs.a')
           print('patch done')
           PY
       - name: Fetch proprietary firmware (public mirror, sha256-verified)
