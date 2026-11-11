@@ -26,6 +26,18 @@ jobs:
           python-version: "3.13"
       - run: brew install llvm lld mtools dtc unifdef
       - run: echo "$(brew --prefix unifdef)/bin" >> "$GITHUB_PATH"
+      - name: Patch upstream REFERENCES (IOHIDFamily missing for OS27)
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('scripts/unixnu/cli.py')
+          t = p.read_text()
+          old = "'IOStorageFamily'), 'package'"
+          new = "'IOStorageFamily', 'IOHIDFamily'), 'package'"
+          assert old in t, 'REFERENCES line not found in scripts/unixnu/cli.py'
+          p.write_text(t.replace(old, new, 1))
+          print('patched: IOHIDFamily added to REFERENCES[kernel]')
+          PY
       - id: k
         env:
           GITHUB_TOKEN: ${{ github.token }}
