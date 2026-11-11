@@ -324,6 +324,36 @@ jobs:
               baseline.write_text(b)
               print('added XNU_EXTRA_LD_ARCHIVES consumption to baseline')
           PY
+      - name: patch kernel reference set
+        # Official form, from UniXNU/UniXNU#22: add a `kind = "refer"` source AND append
+        # its name to REFERENCES['kernel']; #24 then fetches those exact references on a
+        # runner. The OS27 profile already declares the IOHIDFamily refer source
+        # (IOHIDFamily-2238.120.5), UniXNU-sheng#41 moved the device builders to
+        # tree/refer/IOHIDFamily, and build-sheng-source-drivers.py:94 verifies its pin.
+        # The framework still omits it from REFERENCES['kernel'] (issue #69 open gap), so
+        # tree.assemble() skips the unfetched refer module and `rev-parse HEAD` exits 128.
+        # Add it exactly as #22 added IOStorageFamily; no-op once upstream fixes the gap.
+        run: |
+          python3 - <<'PY'
+          import pathlib, re, tomllib
+          profile = pathlib.Path('UniXNU/profiles/os/ipados-27.0.1-24A446/profile.toml')
+          sources = {s['name']: s for s in tomllib.loads(profile.read_text()).get('source', [])}
+          hid = sources.get('IOHIDFamily')
+          assert hid and hid.get('kind') == 'refer', 'OS27 profile lost its IOHIDFamily refer source'
+          print('OS27 IOHIDFamily refer source:', hid.get('ref'), hid.get('commit'), flush=True)
+          cli = pathlib.Path('UniXNU/scripts/unixnu/cli.py')
+          t = cli.read_text()
+          m = re.search(r"('kernel': \([^)]*\))", t)
+          assert m, 'REFERENCES layout changed upstream; inspect before running'
+          block = m.group(1)
+          if "'IOHIDFamily'" in block:
+              print('IOHIDFamily already in REFERENCES[kernel]; nothing to do', flush=True)
+          else:
+              assert block.count("'IOStorageFamily'") == 1, 'kernel reference set changed upstream'
+              new = block.replace("'IOStorageFamily'", "'IOStorageFamily', 'IOHIDFamily'", 1)
+              cli.write_text(t[:m.start(1)] + new + t[m.end(1):])
+              print('added IOHIDFamily to REFERENCES[kernel] (UniXNU#22 form)', flush=True)
+          PY
       - name: tools
         run: |
           brew install dtc llvm lld cmake mtools ninja glslang shaderc spirv-tools bison pkgconf rustup blacktop/tap/ipsw
