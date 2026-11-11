@@ -188,19 +188,19 @@ jobs:
           stubs = ws / 'ci-stubs'
           stubs.mkdir(exist_ok=True)
 
-          known = set('''native_data_io_writes native_data_io_write_bytes native_data_io_write_ticks
-native_data_timer_flushes native_legacy_formats native_legacy_request_layout
-sheng_ethernet_probe sheng_software_aes_probe sheng_bt_firmware_read sheng_bt_firmware_release
-native_ram_block_gpu_addon native_ram_block_volume_seed native_source_storage_start
-native_verified_block_manifest_sha384 native_verified_block_root_authorized
-native_verified_block_volume_device sheng_boot_watchdog_policy
-armcpu_spi_mask armcpu_spi_share armdt_platform_clock_register
-cs_native4k_chunk_ticks cs_native4k_digest_bytes cs_native4k_digest_cpu
-cs_native4k_digest_wall cs_native4k_record_ticks
-native_adreno_gpu_interrupt native_adreno_pool_add
-native_data_flush_blocks native_data_flush_ticks native_data_flushes
-native_data_io_gate_ticks native_data_io_max_ticks native_data_io_read_bytes
-native_data_io_read_ticks native_data_io_reads'''.split())
+          known = set('''          native_data_io_writes native_data_io_write_bytes native_data_io_write_ticks
+          native_data_timer_flushes native_legacy_formats native_legacy_request_layout
+          sheng_ethernet_probe sheng_software_aes_probe sheng_bt_firmware_read sheng_bt_firmware_release
+          native_ram_block_gpu_addon native_ram_block_volume_seed native_source_storage_start
+          native_verified_block_manifest_sha384 native_verified_block_root_authorized
+          native_verified_block_volume_device sheng_boot_watchdog_policy
+          armcpu_spi_mask armcpu_spi_share armdt_platform_clock_register
+          cs_native4k_chunk_ticks cs_native4k_digest_bytes cs_native4k_digest_cpu
+          cs_native4k_digest_wall cs_native4k_record_ticks
+          native_adreno_gpu_interrupt native_adreno_pool_add
+          native_data_flush_blocks native_data_flush_ticks native_data_flushes
+          native_data_io_gate_ticks native_data_io_max_ticks native_data_io_read_bytes
+          native_data_io_read_ticks native_data_io_reads'''.split())
           skip = {'extern','volatile','const','unsigned','signed','static','struct','union','enum',
                   'uint8_t','uint16_t','uint32_t','uint64_t','int8_t','int16_t','int32_t','int64_t',
                   'size_t','ssize_t','uintptr_t','ptrdiff_t','task_t','boolean_t','vm_size_t',
