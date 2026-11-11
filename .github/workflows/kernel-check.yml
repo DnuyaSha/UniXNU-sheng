@@ -28,6 +28,7 @@ jobs:
       - run: echo "$(brew --prefix unifdef)/bin" >> "$GITHUB_PATH"
       - name: Patch upstream gaps (IOHIDFamily fetch + sm8550 pin)
         run: |
+          git -C device submodule update --init --depth 1 drivers/Ath12kWifi
           python3 - <<'PY'
           from pathlib import Path
           # 1) REFERENCES[kernel] lacks IOHIDFamily -> refer/IOHIDFamily never fetched
