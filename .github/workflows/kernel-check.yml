@@ -49,6 +49,8 @@ jobs:
                   print('patched:', f)
           print('patch done')
           PY
+      - name: Fetch proprietary firmware (public mirror, sha256-verified)
+        run: python3 device/scripts/extract-files.py
       - id: k
         env:
           GITHUB_TOKEN: ${{ github.token }}
