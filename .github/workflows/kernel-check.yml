@@ -59,12 +59,13 @@ jobs:
           q.write_text(s.replace(old, new, 1))
           print('patched: fetch-sources.py sparse-checkout -> set --no-cone')
           # 4) The ipados OS patch series is stale: device/framework code calls xnu hooks
-          #    (cs_native4k_*, ml_static_mfree_prepare, iokit_physical_descriptor_close_notify)
-          #    that only the macOS profile's shared patches define. Add them in macos order.
-          shared = ['cshash-native4k-stats.patch', 'payload-addon-release.patch',
-                    'cshash-native4k-parallel.patch', 'cshash-native4k-lazy.patch',
-                    'cssha-digest-time.patch', 'gpupool-device-pager-close.patch',
-                    'memwired-kc-segment-release.patch']
+          #    (cs_native4k_*, iokit_physical_descriptor_close_notify) that only the macOS
+          #    profile's shared patches define. Add them in macos order. payload-addon-release
+          #    and memwired-kc-segment-release are skipped (their hunks carry macOS-series
+          #    context); ml_static_mfree_prepare is provided as a CI shim below instead.
+          shared = ['cshash-native4k-stats.patch', 'cshash-native4k-parallel.patch',
+                    'cshash-native4k-lazy.patch', 'cssha-digest-time.patch',
+                    'gpupool-device-pager-close.patch']
           src = Path('profiles/os/macos-27.3-26C5035r/patches/xnu-12377')
           dst = Path('profiles/os/ipados-27.0.1-24A446/patches/xnu-12377')
           dst.mkdir(exist_ok=True)
@@ -74,15 +75,28 @@ jobs:
               shutil.copy(src / name, dst / name)
               lines += f'../xnu-12377/{name}\n'
           series.write_text(lines)
-          print('patched: ipados OS series +7 shared xnu-12377 patches')
-          # 5) weak_import probes: arm64e kernel links reject undefined weak symbols.
-          #    CI stubs restore the documented non-macOS fallbacks (empty probes, iOS17 layout).
+          print('patched: ipados OS series +5 shared xnu-12377 patches')
+          # 5) weak_import probes + ml_static_mfree_prepare: arm64e kernel links reject
+          #    undefined weak symbols, and the defining patch carries macOS-series context.
+          #    CI stubs restore the documented non-macOS fallbacks and the patch's own
+          #    function semantics (image-tail branch active: no ARM_LARGE_MEMORY here).
           Path('ci-stubs').mkdir(exist_ok=True)
           Path('ci-stubs/ci-stubs.c').write_text(
               '/* CI shims: probes are weak_import and macOS-only in the sources. */\n'
+              'typedef unsigned long long u64;\n'
               'void sheng_ethernet_probe(void) {}\n'
               'void sheng_software_aes_probe(void) {}\n'
-              'const unsigned native_legacy_request_layout[6] = {17, 81, 792, 804, 816, 2624};\n')
+              'const unsigned native_legacy_request_layout[6] = {17, 81, 792, 804, 816, 2624};\n'
+              '/* payload-addon-release.patch semantics for ml_static_mfree_prepare */\n'
+              'extern u64 physmap_base, first_avail_phys, gPhysBase, gVirtBase, end_kern;\n'
+              'extern int ml_static_protect(u64 vaddr, u64 size, int prot);\n'
+              'int ml_static_mfree_prepare(u64 vaddr, u64 size) {\n'
+              '    u64 tail_end = (first_avail_phys - gPhysBase) + gVirtBase;\n'
+              '    int in_tail = vaddr >= end_kern && vaddr < tail_end && size <= tail_end - vaddr;\n'
+              '    if ((vaddr & 4095ULL) != 0 || size < 4096ULL || (vaddr < physmap_base && !in_tail))\n'
+              '        return 0;\n'
+              '    return ml_static_protect(vaddr, size & ~4095ULL, 3) == 0;\n'
+              '}\n')
           sdk = subprocess.run(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'],
                                capture_output=True, text=True, check=True).stdout.strip()
           subprocess.run(['xcrun', 'clang', '-target', 'arm64e-apple-ios27.0', '-isysroot', sdk,
