@@ -26,10 +26,11 @@ jobs:
           python-version: "3.13"
       - run: brew install llvm lld mtools dtc unifdef
       - run: echo "$(brew --prefix unifdef)/bin" >> "$GITHUB_PATH"
-      - name: Patch upstream REFERENCES (IOHIDFamily missing for OS27)
+      - name: Patch upstream gaps (IOHIDFamily fetch + sm8550 pin)
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          # 1) REFERENCES[kernel] lacks IOHIDFamily -> refer/IOHIDFamily never fetched
           p = Path('scripts/unixnu/cli.py')
           t = p.read_text()
           old = "'IOStorageFamily'), 'package'"
@@ -37,6 +38,16 @@ jobs:
           assert old in t, 'REFERENCES line not found in scripts/unixnu/cli.py'
           p.write_text(t.replace(old, new, 1))
           print('patched: IOHIDFamily added to REFERENCES[kernel]')
+          # 2) device feeds pin is stale: BluetoothProbe.cpp needs Sm8550GeniUart.h,
+          #    added in sm8550-common 009512d6+; the pin a9f45dc6 predates it
+          OLD = 'a9f45dc60c035084b95463781538380f4c3606c9'
+          NEW = '97665e28578483082b674e8375a8fa65f4cf49cf'
+          for f in ('device/feeds.toml', 'device/unixnu.lock'):
+              q = Path(f)
+              if q.is_file() and OLD in q.read_text():
+                  q.write_text(q.read_text().replace(OLD, NEW))
+                  print('patched:', f)
+          print('patch done')
           PY
       - id: k
         env:
