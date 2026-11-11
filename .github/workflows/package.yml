@@ -173,59 +173,94 @@ jobs:
           print('patched: stub all undefined symbols + print LTO log tail on failure')
           PY
       - name: patch kernel link inputs
-        # The 27 bring-up patch calls optional hooks that the iPadOS archive set does not
-        # compile (they are weak_import with runtime fallbacks in the device sources).
-        # arm64e links reject undefined weak symbols, so provide typed stubs, following
-        # the stubbing design of UniXNU/UniXNU#147. Inject through the official
-        # CONFIG_XNU_EXTRA_LD_ARCHIVES mechanism.
+        # The 27 bring-up patch calls optional diagnostic hooks that the iPadOS archive
+        # set does not compile. They are declared weak_import in the device sources with
+        # runtime fallbacks, but arm64e links reject undefined weak symbols. Following
+        # the stubbing design of UniXNU/UniXNU#147, scan the checkout for every
+        # weak_import declaration and give each missing hook a weak definition, so a
+        # real strong definition in an archive still wins. Inject via EXTRA_LD_ARCHIVES.
         run: |
           python3 - <<'PY'
-          import os, subprocess
+          import os, re, subprocess
           from pathlib import Path
           ws = Path(os.environ['GITHUB_WORKSPACE'])
+          dev = ws / 'device'
           stubs = ws / 'ci-stubs'
           stubs.mkdir(exist_ok=True)
-          (stubs / 'ci-stubs.c').write_text(r"""
-          #include <stddef.h>
-          #include <stdint.h>
-          /* BootLog.c weak_import counters (volatile uint64_t) */
-          volatile uint64_t native_data_io_writes;
-          volatile uint64_t native_data_io_write_bytes;
-          volatile uint64_t native_data_io_write_ticks;
-          volatile uint64_t native_data_timer_flushes;
-          /* LegacyDisplayProbe.cpp weak_import data */
-          volatile uint32_t native_legacy_formats[10];
-          const unsigned native_legacy_request_layout[6] = {17, 81, 792, 804, 816, 2624};
-          /* Optional probes (weak_import, macOS-only in the sources) */
-          void sheng_ethernet_probe(void) {}
-          void sheng_software_aes_probe(void) {}
-          /* Bluetooth firmware reader: report unavailable; the probe handles the error */
-          int sheng_bt_firmware_read(const char *name, uint8_t **data, size_t *size) {
-              (void)name; if (data) *data = 0; if (size) *size = 0; return 2;
+
+          known = set('''native_data_io_writes native_data_io_write_bytes native_data_io_write_ticks
+native_data_timer_flushes native_legacy_formats native_legacy_request_layout
+sheng_ethernet_probe sheng_software_aes_probe sheng_bt_firmware_read sheng_bt_firmware_release
+native_ram_block_gpu_addon native_ram_block_volume_seed native_source_storage_start
+native_verified_block_manifest_sha384 native_verified_block_root_authorized
+native_verified_block_volume_device sheng_boot_watchdog_policy
+armcpu_spi_mask armcpu_spi_share armdt_platform_clock_register
+cs_native4k_chunk_ticks cs_native4k_digest_bytes cs_native4k_digest_cpu
+cs_native4k_digest_wall cs_native4k_record_ticks
+native_adreno_gpu_interrupt native_adreno_pool_add
+native_data_flush_blocks native_data_flush_ticks native_data_flushes
+native_data_io_gate_ticks native_data_io_max_ticks native_data_io_read_bytes
+native_data_io_read_ticks native_data_io_reads'''.split())
+          skip = {'extern','volatile','const','unsigned','signed','static','struct','union','enum',
+                  'uint8_t','uint16_t','uint32_t','uint64_t','int8_t','int16_t','int32_t','int64_t',
+                  'size_t','ssize_t','uintptr_t','ptrdiff_t','task_t','boolean_t','vm_size_t',
+                  'weak_import','__attribute__','row','data','index','name','stage','total','mask',
+                  'offset','first','last_err','lba','lun','cpp','scans','frames','generation',
+                  'beacons','blocks','char','bool','long','short','void','int','float','double'}
+
+          names = set(known)
+          for pattern in ('*.c', '*.cpp', '*.h'):
+              for p in dev.rglob(pattern):
+                  if '.git' in p.parts or not p.is_file():
+                      continue
+                  try:
+                      src = p.read_text(errors='replace')
+                  except OSError:
+                      continue
+                  for line in src.splitlines():
+                      if 'weak_import' not in line:
+                          continue
+                      clean = line.replace('__attribute__((weak_import))', '')
+                      for m in re.finditer(r'\b([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]*\])?\s*(?=[,;])', clean):
+                          n = m.group(1)
+                          if n in skip or len(n) < 6 or '_' not in n:
+                              continue
+                          names.add(n)
+
+          exact = {
+            'native_legacy_request_layout': 'const unsigned native_legacy_request_layout[6] = {17, 81, 792, 804, 816, 2624};',
+            'native_legacy_formats': 'volatile uint32_t native_legacy_formats[10];',
+            'sheng_ethernet_probe': 'void sheng_ethernet_probe(void) {}',
+            'sheng_software_aes_probe': 'void sheng_software_aes_probe(void) {}',
+            'sheng_bt_firmware_read': ('int sheng_bt_firmware_read(const char *name, uint8_t **data, size_t *size) {'
+                                       ' (void)name; if (data) *data = 0; if (size) *size = 0; return 2; }'),
+            'sheng_bt_firmware_release': 'void sheng_bt_firmware_release(uint8_t *data, size_t size) { (void)data; (void)size; }',
           }
-          void sheng_bt_firmware_release(uint8_t *data, size_t size) { (void)data; (void)size; }
-          /* Optional stage/policy hooks referenced by the xnu bring-up patches.
-             Zero-valued data keeps the sources' null checks on the fallback path. */
-          uint64_t native_ram_block_gpu_addon;
-          uint64_t native_ram_block_volume_seed;
-          uint64_t native_source_storage_start;
-          uint64_t native_verified_block_manifest_sha384;
-          uint64_t native_verified_block_root_authorized;
-          uint64_t native_verified_block_volume_device;
-          uint64_t sheng_boot_watchdog_policy;
-          """)
+          lines = ['/* Generated by CI: typed stubs for the arm64e 27 kernel link (UniXNU#147). */',
+                   '#include <stddef.h>', '#include <stdint.h>']
+          for n, decl in exact.items():
+              lines.append(decl)
+              names.discard(n)
+          for n in sorted(names):
+              lines.append(f'long {n} __attribute__((weak));')
+          (stubs / 'ci-stubs.c').write_text('\n'.join(lines) + '\n')
+          print(f'generated {len(names) + len(exact)} stubs ({len(names)} weak data)', flush=True)
+
           sdk = subprocess.check_output(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'], text=True).strip()
           subprocess.run(['xcrun', 'clang', '-target', 'arm64e-apple-ios27.0', '-isysroot', sdk,
                           '-c', str(stubs / 'ci-stubs.c'), '-o', str(stubs / 'ci-stubs.o')], check=True)
           subprocess.run(['xcrun', 'ar', 'rcs', str(stubs / 'libCiStubs.a'),
                           str(stubs / 'ci-stubs.o')], check=True)
-          cfg = ws / 'device' / 'configs' / 'sheng_ipados27_defconfig'
+          cfg = dev / 'configs' / 'sheng_ipados27_defconfig'
           t = cfg.read_text()
           old = 'CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/sheng-source-storage/libShengSourceStorage.a"'
-          assert t.count(old) == 1, 'EXTRA_LD_ARCHIVES line changed upstream'
-          new = old[:-1] + ' -Wl,-force_load,' + str(stubs / 'libCiStubs.a') + '"'
-          cfg.write_text(t.replace(old, new, 1))
-          print('staged typed stubs and patched defconfig:', new)
+          if t.count(old) == 1:
+              new = old[:-1] + ' -Wl,-force_load,' + str(stubs / 'libCiStubs.a') + '"'
+              cfg.write_text(t.replace(old, new, 1))
+              print('patched defconfig', flush=True)
+          else:
+              assert 'libCiStubs.a' in t, 'EXTRA_LD_ARCHIVES missing stub library'
+              print('defconfig already patched', flush=True)
           PY
       - name: tools
         run: |
