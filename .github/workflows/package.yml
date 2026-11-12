@@ -360,6 +360,40 @@ jobs:
               cli.write_text(t[:m.start(1)] + new + t[m.end(1):])
               print('added IOHIDFamily to REFERENCES[kernel] (UniXNU#22 form)', flush=True)
           PY
+      - name: patch adreno input fetch retries
+        # Upstream #141 only fixes GitHub API 403 rate limits. The pinned Adreno inputs
+        # also come from raw.githubusercontent.com and chromium.googlesource.com, which
+        # answer transient 503 on hosted runners (run 43144348898, archive-12).
+        # Retry with backoff and lower concurrency; the official script still verifies
+        # every SHA-256 / git blob identity. Idempotent if upstream adds its own retry.
+        run: |
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+          p = Path('UniXNU/scripts/fetch-adreno-inputs.py')
+          t = p.read_text()
+          if 'UNIXNU_RETRY_PATCH' in t:
+              print('already patched; nothing to do')
+          else:
+              m = re.search(r"        with urllib\.request\.urlopen\(request, timeout=\d+\) as response:\n            data = response\.read\(\)\n", t)
+              assert m, 'adreno fetch call layout changed upstream; inspect before running'
+              new = ("        for attempt in range(5):  # UNIXNU_RETRY_PATCH: transient 5xx\n"
+                     "            try:\n"
+                     "                with urllib.request.urlopen(request, timeout=60) as response:\n"
+                     "                    data = response.read()\n"
+                     "                break\n"
+                     "            except Exception as exc:\n"
+                     "                if attempt == 4:\n"
+                     "                    raise\n"
+                     "                print(f'retry {attempt + 1}/5 {url}: {exc}', flush=True)\n"
+                     "                time.sleep(2 ** attempt)\n")
+              t = t[:m.start()] + new + t[m.end():]
+              assert t.count('import os\n') == 1, 'import block changed upstream'
+              t = t.replace('import os\n', 'import os\nimport time\n', 1)
+              t = t.replace('ThreadPoolExecutor(max_workers=4)', 'ThreadPoolExecutor(max_workers=2)', 1)
+              p.write_text(t)
+              print('patched: 5 retries with backoff, concurrency 4 -> 2')
+          PY
       - name: tools
         run: |
           brew install dtc llvm lld cmake mtools ninja glslang shaderc spirv-tools bison pkgconf rustup blacktop/tap/ipsw
