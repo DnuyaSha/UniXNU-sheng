@@ -83,6 +83,63 @@ jobs:
               else:
                   raise SystemExit(rel + ': unexpected SoC pin; inspect feeds.toml')
           PY
+      - name: device hook weak stubs (macOS-profile-only symbols)
+        # PIT (run 43406736873): the DEVELOPMENT kernel link fails on 16 weak imports
+        # that device main's newer code references but only the macOS 27.3 profile
+        # patches provide (cssha-digest-time, memwired-kc-segment-release,
+        # gpupool-device-pager-close). Two more (sheng_ethernet_probe,
+        # sheng_software_aes_probe) live in device package files that this archive
+        # list does not compile. arm64e cannot leave an authenticated pointer to an
+        # undefined weak symbol, so provide weak defaults (project convention).
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, subprocess
+          names = [
+              'cs_native4k_digest_bytes', 'cs_native4k_digest_cpu',
+              'cs_native4k_digest_wall', 'cs_native4k_record_ticks',
+              'iokit_physical_descriptor_close_notify',
+              'ml_static_mfree_prepare',
+              'native_legacy_request_layout',
+              'native_ram_block_gpu_addon', 'native_ram_block_volume_seed',
+              'native_source_storage_start',
+              'native_verified_block_manifest_sha384',
+              'native_verified_block_root_authorized',
+              'native_verified_block_volume_device',
+              'sheng_boot_watchdog_policy',
+              'sheng_ethernet_probe', 'sheng_software_aes_probe',
+          ]
+          src = ['/* weak defaults for hooks this build combination cannot provide */',
+                 '#define WEAK __attribute__((weak, visibility("hidden")))']
+          for name in names:
+              src.append('WEAK long %s(void) { return 0; }' % name)
+          src.append('WEAK long native_hooks_stub_marker(void) { return 0; }')
+          path = pathlib.Path('ci-device-stubs.c')
+          path.write_text(chr(10).join(src) + chr(10))
+          sdk = subprocess.check_output(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'], text=True).strip()
+          obj = pathlib.Path(subprocess.check_output(['pwd'], text=True).strip()) / 'ci-device-stubs.o'
+          subprocess.run(['xcrun', 'clang', '-arch', 'arm64e', '-mkernel', '-isysroot', sdk,
+                          '-c', '-o', str(obj), str(path)], check=True)
+          print('compiled weak stubs ->', obj, os.path.getsize(obj), 'bytes')
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write('CI_DEVICE_STUBS=' + str(obj) + chr(10))
+          PY
+          python3 - <<'PY'
+          import pathlib
+          p = pathlib.Path('UniXNU/scripts/build-xnu-4k-baseline.sh')
+          t = p.read_text()
+          old = 'KERNEL_EXTRA_ARCHIVES="-L$KERNEL_SDKROOT/usr/local/lib/kernel -lfirehose_kernel $CRYPTO_ARCHIVE"'
+          new = ('KERNEL_EXTRA_ARCHIVES="-L$KERNEL_SDKROOT/usr/local/lib/kernel -lfirehose_kernel $CRYPTO_ARCHIVE'
+                 '${CI_DEVICE_STUBS:+ -Wl,-force_load,$CI_DEVICE_STUBS}"')
+          if 'CI_DEVICE_STUBS' in t:
+              print('baseline script: already patched')
+          elif old not in t:
+              raise SystemExit('baseline script: KERNEL_EXTRA_ARCHIVES anchor not found')
+          else:
+              p.write_text(t.replace(old, new, 1))
+              print('baseline script: CI_DEVICE_STUBS force-load added')
+          PY
       - name: patch fileset reference stubs (device hook prefixes)
         # PIT (run 43397482308): build-fileset-release-reference.py auto-stubs only
         # native_* undefined weak symbols. Device main's newer code also references
