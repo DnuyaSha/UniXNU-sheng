@@ -1,7 +1,7 @@
 name: package
 
 # FULL upstream sync round N+1: official device main + official framework main
-# + sm8550 SoC pin bump (a9f45dc6 -> 97665e28, fixes BluetoothProbe compile),
+# + sm8550 SoC pin bump (a9f45dc6 -> SoC main 2dc650ca: GeniUart/QupDma/VideoCc/AppsSmmu),
 # + PR #229 cherry-pick, + the sheng ABL 0x218 DTB fix, + build-logs upload.
 #
 # The platform seed comes from the repository secret UNIXNU_UNIQUE_CHIP_ID and
@@ -62,16 +62,16 @@ jobs:
           path: uefi-sheng
           submodules: recursive
       - name: bump sm8550 SoC pin (Sm8550GeniUart.h requirement)
-        # ROOT CAUSE of run 43375570118: device main's feeds.toml/unixnu.lock pin
-        # SoC a9f45dc6, which predates kits/Sm8550Platform/Sm8550GeniUart.h (added
-        # at 009512d6). package/BluetoothProbe.cpp #includes "Sm8550GeniUart.h", so
-        # archive-19 (build-gop-legacy-display-27.py) compile dies. The proven pin
-        # is 97665e28 (every green sheng build uses it).
+        # ROOT CAUSE (runs 43375570118 / 43388561958): device main's feeds.toml and
+        # unixnu.lock pin SoC a9f45dc6, whose kits/Sm8550Platform lacks everything the
+        # device build compiles - Sm8550GeniUart.h/.c (BluetoothProbe), Sm8550QupDma,
+        # Sm8550VideoCc (video clock, H264) and Sm8550AppsSmmu. SoC main 2dc650ca has
+        # all four; every file the build references is checked by preflight.
         run: |
           python3 - <<'PY'
           import pathlib
           OLD = 'a9f45dc60c035084b95463781538380f4c3606c9'
-          NEW = '97665e28578483082b674e8375a8fa65f4cf49cf'
+          NEW = '2dc650ca76ae38715cd0712e60a44b14fe251745'
           for rel in ('device/feeds.toml', 'device/unixnu.lock'):
               p = pathlib.Path(rel)
               t = p.read_text()
