@@ -102,12 +102,12 @@ jobs:
           p.write_text(t)
           b = pathlib.Path('device/board.toml')
           bt = b.read_text()
-          old = '"scripts/extract-sheng-firmware.py --delete-archive", "scripts/import-sheng-uefi.py"'
-          new = '"scripts/extract-sheng-firmware.py --delete-archive", "scripts/fetch-sheng-abldtb.py", "scripts/import-sheng-uefi.py"'
+          old = '"scripts/import-sheng-uefi.py", "scripts/check-sheng.py"]'
+          new = '"scripts/import-sheng-uefi.py", "scripts/check-sheng.py", "scripts/fetch-sheng-abldtb.py"]'
           if old not in bt:
               raise SystemExit('board.toml preflight anchor not found')
           b.write_text(bt.replace(old, new, 1))
-          print('fetch-sheng-abldtb.py added; board.toml preflight patched')
+          print('fetch-sheng-abldtb.py added AFTER check-sheng.py; board.toml preflight patched')
           PY
       - name: tools
         run: |
