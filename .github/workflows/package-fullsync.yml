@@ -159,9 +159,35 @@ jobs:
         # fetch-babylon-abldtb.py: copy the vendor_boot base tree that carries __symbols__, select
         # msm-id 0x218 (this handset ABL "Chiptype: 536"), overwrite build/sheng/sheng.dtb, then add
         # the step to board.toml preflight AFTER check-sheng.py.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          curl -fsSL -o device/scripts/fetch-sheng-abldtb.py \
-            "https://raw.githubusercontent.com/niuzicheng666-source/UniXNU-sheng/b87a4cb89377914fdb0e11482a3e9221491db817/scripts/fetch-babylon-abldtb.py"
+          # PIT: raw.githubusercontent.com failed DNS resolution on the runner
+          # (run 43395310378). Fetch through the API with the workflow token first;
+          # fall back to raw with retries.
+          python3 - <<'PY'
+          import base64, json, os, subprocess, urllib.request
+          ref = 'b87a4cb89377914fdb0e11482a3e9221491db817'
+          api = ('https://api.github.com/repos/niuzicheng666-source/UniXNU-sheng/'
+                 'contents/scripts/fetch-babylon-abldtb.py?ref=' + ref)
+          req = urllib.request.Request(api, headers={
+              'Accept': 'application/vnd.github+json',
+              'Authorization': 'Bearer ' + os.environ.get('GITHUB_TOKEN', ''),
+              'User-Agent': 'sheng-ci'})
+          try:
+              data = json.loads(urllib.request.urlopen(req, timeout=60).read())
+              blob = base64.b64decode(data['content'])
+              open('device/scripts/fetch-sheng-abldtb.py', 'wb').write(blob)
+              print('fetched fetch-babylon-abldtb.py via api (%d bytes)' % len(blob))
+          except Exception as error:
+              print('api fetch failed (%s); falling back to raw' % error)
+              raw = ('https://raw.githubusercontent.com/niuzicheng666-source/UniXNU-sheng/'
+                     + ref + '/scripts/fetch-babylon-abldtb.py')
+              subprocess.run(['curl', '-fsSL', '--retry', '5', '--retry-delay', '3',
+                              '--retry-connrefused', '-o',
+                              'device/scripts/fetch-sheng-abldtb.py', raw], check=True)
+              print('fetched via raw')
+          PY
           python3 - <<'PY'
           import pathlib
           p = pathlib.Path('device/scripts/fetch-sheng-abldtb.py')
