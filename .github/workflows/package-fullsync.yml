@@ -1,9 +1,8 @@
 name: package
 
-# FULL upstream sync: official device main + official framework main + the sheng
-# ABL device-tree fix (vendor_boot 0x218 base tree with __symbols__). AdrenoMetal's
-# compile regression is resolved at 73d582fd (pinned by framework main). uefi-sheng
-# stays at 66421cb7. Fallback if the kernel link fails: package-ci-newest.yml.
+# FULL upstream sync round N+1: official device main + official framework main
+# + sm8550 SoC pin bump (a9f45dc6 -> 97665e28, fixes BluetoothProbe compile),
+# + PR #229 cherry-pick, + the sheng ABL 0x218 DTB fix, + build-logs upload.
 #
 # The platform seed comes from the repository secret UNIXNU_UNIQUE_CHIP_ID and
 # is baked into the images, so the run's artifacts belong to one device alone:
@@ -62,6 +61,38 @@ jobs:
           ref: 66421cb7bb5694843aec8de1ca3d1de4c20cca38 # pinned: uefi-sheng main, unchanged since 2026-11-01
           path: uefi-sheng
           submodules: recursive
+      - name: bump sm8550 SoC pin (Sm8550GeniUart.h requirement)
+        # ROOT CAUSE of run 43375570118: device main's feeds.toml/unixnu.lock pin
+        # SoC a9f45dc6, which predates kits/Sm8550Platform/Sm8550GeniUart.h (added
+        # at 009512d6). package/BluetoothProbe.cpp #includes "Sm8550GeniUart.h", so
+        # archive-19 (build-gop-legacy-display-27.py) compile dies. The proven pin
+        # is 97665e28 (every green sheng build uses it).
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          OLD = 'a9f45dc60c035084b95463781538380f4c3606c9'
+          NEW = '97665e28578483082b674e8375a8fa65f4cf49cf'
+          for rel in ('device/feeds.toml', 'device/unixnu.lock'):
+              p = pathlib.Path(rel)
+              t = p.read_text()
+              if OLD not in t:
+                  raise SystemExit(rel + ': old SoC pin not found')
+              p.write_text(t.replace(OLD, NEW))
+              print(rel + ': SoC pin ' + OLD[:8] + ' -> ' + NEW[:8])
+          PY
+      - name: cherry-pick upstream PR 229 (ipsw AEA decrypt on non-mac hosts)
+        # Upstream follow-up (stoicneko, mergeable): lets ./unixnu build userdata
+        # decrypt AEA images via the ipsw tool on hosts without /usr/bin/aea.
+        # macOS keeps its native path; keep-on-error leaves the stock script if
+        # the cherry-pick conflicts.
+        continue-on-error: true
+        working-directory: UniXNU
+        run: |
+          git fetch --depth=1 origin pull/229/head:pr229
+          git cherry-pick --no-commit pr229 && git commit -m "cherry-pick UniXNU PR #229 (ipsw AEA non-mac)" || {
+            git cherry-pick --abort 2>/dev/null || true
+            echo "PR #229 cherry-pick skipped; stock ipsw.py kept"
+          }
       - name: repair Mesa patch header
         # UniXNU 82b847c: turnip-frame-diagnostics.patch creates tu_frame_diagnostic.h without the "new file mode"
         # line, so git apply stops at dev/null. UniXNU e7c359c adds exactly that line; add it here for the pinned revision.
@@ -267,3 +298,11 @@ jobs:
             UniXNU/out/sheng/*/*/payload/payload.img
             UniXNU/out/sheng/*/*/kernel/kernel.macho
             UniXNU/out/sheng/*/*/package.manifest.json
+      - name: build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ inputs.os }}
+          retention-days: 2
+          if-no-files-found: warn
+          path: UniXNU/out/sheng/*/*/logs/
