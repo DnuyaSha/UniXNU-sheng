@@ -306,6 +306,40 @@ jobs:
           b.write_text(bt.replace(old, new, 1))
           print('fetch-sheng-abldtb.py added AFTER check-sheng.py; board.toml preflight patched')
           PY
+      - name: native dwc3 console probe (read-only)
+        # Stage 1 of the polling USB CDC ACM console (r11 boot-irq74 shape: a pexpert
+        # backend, not an IOKit driver). This stage only READS the DWC3 registers and
+        # prints them: QcomDwc3/AppleUSBXDCI owns the controller once IOKit starts, so
+        # touching PHY/clock here could break the USB macOS itself uses. The printed
+        # DSTS state decides whether a CDC interface can be added without re-init
+        # (state 5 = firmware left the device configured).
+        run: |
+          python3 - <<'PY'
+          import base64, pathlib
+          pathlib.Path('device/scripts/native-dwc3-console.c').write_bytes(
+              base64.b64decode('LyogbmF0aXZlLWR3YzMtY29uc29sZS5jIOKAlCBTTTg1NTAgRFdDMyBjb25zb2xlLCBzdGFnZSAxOiByZWFkLW9ubHkgcHJvYmUuCiAqCiAqIFNoYXBlIHRha2VuIGZyb20gdGhlIHIxMSBwb3J0IChVbmlYTlUgZG9jcy9kZXZpY2VzL3IxMS1hcHBsZWlwb2R0b3VjaDQubWQsCiAqIGJvb3QtaXJxNzQpOiBhICpwb2xsaW5nKiBVU0IyIGJhY2tlbmQgcmVnaXN0ZXJlZCBpbnRvIHBleHBlcnQsIGNvbmZpZ3VyZWQgZnJvbQogKiB0aGUgcGxhdGZvcm0ncyBEV0MzIHdpbmRvdyByYXRoZXIgdGhhbiBmcm9tIGFuIElPS2l0IGRyaXZlci4gU3RhZ2UgMSBvbmx5IHJlYWRzCiAqIHRoZSBjb250cm9sbGVyIHN0YXRlIGFuZCBwcmludHMgaXQsIGJlY2F1c2U6CiAqICAgLSB0aGUgc3lzdGVtLXNpZGUgVVNCIHN0YWNrIChRY29tRHdjMyAvIEFwcGxlVVNCWERDSSkgYWxyZWFkeSBvd25zIHRoaXMKICogICAgIGNvbnRyb2xsZXIgb25jZSBJT0tpdCBzdGFydHM7IHdyaXRpbmcgUEhZL2Nsb2NrIHJlZ2lzdGVycyBoZXJlIGNvdWxkIGJyZWFrCiAqICAgICB0aGUgVVNCIHRoYXQgbWFjT1MgaXRzZWxmIHVzZXM7CiAqICAgLSB0aGUgcjExIG5vdGUgc2F5cyB0aGUgY29uc29sZSByZWxpZXMgb24gZmlybXdhcmUgbGVhdmluZyBjbG9ja3MgYW5kIFBIWQogKiAgICAgYWxpdmUsIHNvIGtub3dpbmcgd2hhdCB0aGUgaGFuZG9mZiBzdGF0ZSBhY3R1YWxseSBpcyBkZWNpZGVzIHdoZXRoZXIgYQogKiAgICAgQ0RDIEFDTSBlbmRwb2ludCBjYW4gYmUgYnJvdWdodCB1cCB3aXRob3V0IHRvdWNoaW5nIHRoZW0uCiAqCiAqIFJlZ2lzdGVyIG9mZnNldHMgYXJlIHRoZSBzdGFuZGFyZCBEV0MzIG9uZXMsIHJlbGF0aXZlIHRvIHRoZSAweGMwMDAgd2luZG93IHRoZQogKiBBcHBsZSBzdWJjbGFzcyBtYXBzIChRY29tRHdjMy5jcHA6IGtDb3JlIDB4MGE2MDAwMDAsIGtBcHBsZVdpbmRvdyA9IGtDb3JlICsgMHhjMDAwKS4KICogRXZlcnl0aGluZyBoZXJlIGlzIGEgcmVhZCwgc28gaXQgY2Fubm90IGNoYW5nZSBjb250cm9sbGVyIGJlaGF2aW91ci4KICovCgojaW5jbHVkZSA8cGV4cGVydC9wZXhwZXJ0Lmg+CgpleHRlcm4gaW50IHByaW50Zihjb25zdCBjaGFyICpmb3JtYXQsIC4uLik7CgojZGVmaW5lIERXQzNfV0lORE9XICAgMHgwYTYwYzAwMHUKCi8qIEdsb2JhbCByZWdpc3RlcnMgKERXQzMgZGF0YWJvb2spLiAqLwojZGVmaW5lIERXQzNfR0NUTCAgICAgICAweDExMHUKI2RlZmluZSBEV0MzX0dTTlBTSUQgICAgMHgxMjB1CiNkZWZpbmUgRFdDM19HVUlEICAgICAgIDB4MTI4dQojZGVmaW5lIERXQzNfR1VTQjJQSFlDRkcobikgKDB4MjAwdSArIDR1ICogKG4pKQoKLyogRGV2aWNlIHJlZ2lzdGVycy4gKi8KI2RlZmluZSBEV0MzX0RDRkcgICAgICAgMHg3MDB1CiNkZWZpbmUgRFdDM19EQ1RMICAgICAgIDB4NzA0dQojZGVmaW5lIERXQzNfRFNUUyAgICAgICAweDcwY3UKI2RlZmluZSBEV0MzX0RBTEVQRU5BICAgMHg3MjB1CgpzdGF0aWMgaW5saW5lIHVuc2lnbmVkIGludCBkd2MzX3JlYWQodW5zaWduZWQgaW50IG9mZnNldCkKewoJcmV0dXJuICoodm9sYXRpbGUgdW5zaWduZWQgaW50ICopKERXQzNfV0lORE9XICsgb2Zmc2V0KTsKfQoKdm9pZApuYXRpdmVfZHdjM19jb25zb2xlX3Byb2JlKHZvaWQpCnsKCXVuc2lnbmVkIGludCBpZCA9IGR3YzNfcmVhZChEV0MzX0dTTlBTSUQpOwoKCS8qIEEgRFdDMyBjb3JlIGFuc3dlcnMgMHg1NTMzeHh4eCAob3IgMHgzMzMxeHh4eCBvbiBlYXJseSByZXZpc2lvbnMpLgoJICogQW55dGhpbmcgZWxzZSBtZWFucyB0aGUgd2luZG93IGlzIG5vdCB0aGUgY29udHJvbGxlcjogcmVwb3J0IGFuZCBzdG9wLiAqLwoJaWYgKChpZCA+PiAxNikgIT0gMHg1NTMzdSAmJiAoaWQgPj4gMTYpICE9IDB4MzMzMXUpIHsKCQlwcmludGYoIltkd2MzXSBubyBjb3JlIGF0ICUwOHggKGdzbnBzaWQ9JTA4eClcbiIsIERXQzNfV0lORE9XLCBpZCk7CgkJcmV0dXJuOwoJfQoKCXByaW50ZigiW2R3YzNdIGlkPSUwOHggZ3VpZD0lMDh4IGdjdGw9JTA4eCB1c2IycGh5PSUwOHggZGNmZz0lMDh4IGRjdGw9JTA4eCBkc3RzPSUwOHggYWxlcD0lMDh4XG4iLAoJICAgIGlkLAoJICAgIGR3YzNfcmVhZChEV0MzX0dVSUQpLAoJICAgIGR3YzNfcmVhZChEV0MzX0dDVEwpLAoJICAgIGR3YzNfcmVhZChEV0MzX0dVU0IyUEhZQ0ZHKDApKSwKCSAgICBkd2MzX3JlYWQoRFdDM19EQ0ZHKSwKCSAgICBkd2MzX3JlYWQoRFdDM19EQ1RMKSwKCSAgICBkd2MzX3JlYWQoRFdDM19EU1RTKSwKCSAgICBkd2MzX3JlYWQoRFdDM19EQUxFUEVOQSkpOwoKCS8qIERTVFNbMjowXTogMCBub3QgYXR0YWNoZWQsIDEgYXR0YWNoZWQsIDIgcG93ZXJlZCwgMyBkZWZhdWx0LCA0IGFkZHJlc3MsCgkgKiA1IGNvbmZpZ3VyZWQuIDUgYWxyZWFkeSBtZWFucyBmaXJtd2FyZSBsZWZ0IGEgY29uZmlndXJlZCBkZXZpY2UgYW5kIGEKCSAqIENEQyBBQ00gaW50ZXJmYWNlIGNhbiBiZSBhZGRlZCB3aXRob3V0IHJlLWluaXRpYWxpc2luZyB0aGUgUEhZLiAqLwoJcHJpbnRmKCJbZHdjM10gc3RhdGU9JXUgc3BlZWQ9JXVcbiIsCgkgICAgZHdjM19yZWFkKERXQzNfRFNUUykgJiA3dSwgKGR3YzNfcmVhZChEV0MzX0RTVFMpID4+IDgpICYgN3UpOwp9Cg=='))
+          pathlib.Path('device/scripts/dwc3-inject.sh').write_bytes(
+              base64.b64decode('IyEvdXNyL2Jpbi9lbnYgYmFzaAojIEluamVjdCB0aGUgbmF0aXZlIERXQzMgY29uc29sZSBzb3VyY2UgaW50byB0aGUgWE5VIHdvcmsgdHJlZSwgaW1tZWRpYXRlbHkgYmVmb3JlCiMgdGhlIGtlcm5lbCBpcyBidWlsdC4gYnVpbGQteG51LTRrLWJhc2VsaW5lLnNoIGNhbGxzIHRoaXMgKGhvb2tlZCBieSBDSSkgYWZ0ZXIgaXQKIyBoYXMgYXBwbGllZCBwYXRjaGVzL3hudS8qLnBhdGNoIGFuZCBiZWZvcmUgYG1ha2VgLgojCiMgSWRlbXBvdGVudDogcmUtcnVubmluZyBvbiBhbiBhbHJlYWR5IGluamVjdGVkIHRyZWUgb25seSByZS1jb3BpZXMgdGhlIHNvdXJjZS4Kc2V0IC1ldQpST09UPSIkezE6LS59IgpXPSIkUk9PVC8uY2FjaGUveG51LXdvcmsiCgppZiBbICEgLWQgIiRXL3BleHBlcnQvYXJtIiBdOyB0aGVuCgllY2hvICJkd2MzLWluamVjdDogbm8geG51IHdvcmsgdHJlZSBhdCAkVzsgc2tpcHBpbmciCglleGl0IDAKZmkKClNSQz0iJFJPT1Qvc2NyaXB0cy9uYXRpdmUtZHdjMy1jb25zb2xlLmMiCmlmIFsgISAtZiAiJFNSQyIgXTsgdGhlbgoJZWNobyAiZHdjMy1pbmplY3Q6ICRTUkMgbWlzc2luZzsgc2tpcHBpbmciID4mMgoJZXhpdCAxCmZpCmNwICIkU1JDIiAiJFcvcGV4cGVydC9hcm0vbmF0aXZlLWR3YzMtY29uc29sZS5jIgoKIyBwZXhwZXJ0L2NvbmYvZmlsZXMuYXJtNjQgbGlzdHMgdGhlIG9iamVjdHMgY29tcGlsZWQgaW50byB0aGUga2VybmVsIGV4cGxpY2l0bHkuCmlmICEgZ3JlcCAtcSAnbmF0aXZlLWR3YzMtY29uc29sZS5jJyAiJFcvcGV4cGVydC9jb25mL2ZpbGVzLmFybTY0IjsgdGhlbgoJcHJpbnRmICdcbnBleHBlcnQvYXJtL25hdGl2ZS1kd2MzLWNvbnNvbGUuYyAgICAgIHN0YW5kYXJkXG4nID4+ICIkVy9wZXhwZXJ0L2NvbmYvZmlsZXMuYXJtNjQiCgllY2hvICJkd2MzLWluamVjdDogZmlsZXMuYXJtNjQgdXBkYXRlZCIKZmkKCnB5dGhvbjMgLSAiJFciIDw8J1BZJwppbXBvcnQgcGF0aGxpYgppbXBvcnQgc3lzCgp3ID0gcGF0aGxpYi5QYXRoKHN5cy5hcmd2WzFdKQpwID0gdyAvICdwZXhwZXJ0L2FybS9wZV9rcHJpbnRmLmMnCnQgPSBwLnJlYWRfdGV4dCgpCmlmICduYXRpdmVfZHdjM19jb25zb2xlX3Byb2JlJyBpbiB0OgogICAgcHJpbnQoJ2R3YzMtaW5qZWN0OiBwZV9rcHJpbnRmIGFscmVhZHkgcGF0Y2hlZCcpCiAgICByYWlzZSBTeXN0ZW1FeGl0KDApCgphbmNob3IgPSAnXHRpZiAoc2VyaWFsX2luaXQoKSkgeycKaWYgYW5jaG9yIG5vdCBpbiB0OgogICAgcmFpc2UgU3lzdGVtRXhpdCgnZHdjMy1pbmplY3Q6IHNlcmlhbF9pbml0IGFuY2hvciBub3QgZm91bmQgaW4gcGVfa3ByaW50Zi5jJykKdCA9IHQucmVwbGFjZShhbmNob3IsICdcdGV4dGVybiB2b2lkIG5hdGl2ZV9kd2MzX2NvbnNvbGVfcHJvYmUodm9pZCk7XG4nICsgYW5jaG9yLCAxKQoKIyBDYWxsIGFmdGVyIFBFX2twdXRjIGlzIGNob3Nlbiwgc28gcHJpbnRmKCkgaW4gdGhlIHByb2JlIGFscmVhZHkgaGFzIGFuIG91dHB1dCBwYXRoLgp0YWlsID0gJ1x0XHRQRV9rcHV0YyA9IGNvbnNvbGVfd3JpdGVfdW5idWZmZXJlZDtcblx0fVxufScKaWYgdGFpbCBub3QgaW4gdDoKICAgIHJhaXNlIFN5c3RlbUV4aXQoJ2R3YzMtaW5qZWN0OiBQRV9pbml0X2twcmludGYgdGFpbCBub3QgZm91bmQnKQp0ID0gdC5yZXBsYWNlKHRhaWwsICdcdFx0UEVfa3B1dGMgPSBjb25zb2xlX3dyaXRlX3VuYnVmZmVyZWQ7XG5cdH1cblx0bmF0aXZlX2R3YzNfY29uc29sZV9wcm9iZSgpO1xufScsIDEpCnAud3JpdGVfdGV4dCh0KQpwcmludCgnZHdjMy1pbmplY3Q6IHByb2JlIGNhbGwgaW5zZXJ0ZWQgaW50byBQRV9pbml0X2twcmludGYnKQpQWQo='))
+          print('wrote device/scripts/native-dwc3-console.c + dwc3-inject.sh')
+          PY
+          python3 - <<'PY'
+          import pathlib
+          p = pathlib.Path('UniXNU/scripts/build-xnu-4k-baseline.sh')
+          t = p.read_text()
+          if 'dwc3-inject.sh' in t:
+              print('baseline: dwc3 injector already hooked')
+          else:
+              marker = 'KERNEL_EXTRA_ARCHIVES="-L$KERNEL_SDKROOT/usr/local/lib/kernel'
+              i = t.find(marker)
+              if i < 0:
+                  raise SystemExit('baseline: KERNEL_EXTRA_ARCHIVES anchor not found')
+              j = t.find(chr(10), i) + 1
+              hook = ('# native DWC3 console: inject the pexpert source before make'
+                      + chr(10) + '[ -f "$ROOT/scripts/dwc3-inject.sh" ] && bash
+                      ' $ROOT/scripts/dwc3-inject.sh" "$ROOT"' + chr(10))
+              p.write_text(t[:j] + hook + t[j:])
+              print('baseline: dwc3 injector hooked before kernel build')
+          PY
       - name: tools
         run: |
           brew install dtc llvm lld cmake mtools ninja glslang shaderc spirv-tools bison pkgconf rustup blacktop/tap/ipsw
