@@ -1,0 +1,269 @@
+name: package
+
+# FULL upstream sync: official device main + official framework main + the sheng
+# ABL device-tree fix (vendor_boot 0x218 base tree with __symbols__). AdrenoMetal's
+# compile regression is resolved at 73d582fd (pinned by framework main). uefi-sheng
+# stays at 66421cb7. Fallback if the kernel link fails: package-ci-newest.yml.
+#
+# The platform seed comes from the repository secret UNIXNU_UNIQUE_CHIP_ID and
+# is baked into the images, so the run's artifacts belong to one device alone:
+# download them, then delete the run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: "OS profile of the images"
+        type: choice
+        options: ["27", "26", "17"]
+        default: "27"
+      init_data:
+        description: "Create a NEW installation seed if no saved seed exists (iPadOS 27 only)"
+        type: boolean
+        default: false
+      data_seed_url:
+        description: "Optional original data.dbr URL for an existing installation; otherwise use the saved cache"
+        type: string
+      data_seed_sha256:
+        description: "Required SHA-256 when data_seed_url is supplied"
+        type: string
+      framework:
+        description: "Compatibility input (ignored); the UniXNU pin is fixed in the checkout"
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    runs-on: macos-26
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: UniXNU/UniXNU-sheng
+          ref: 1108068537d5396edb2c63b2f8c6f5b97b0a4bbc # official device main (full upstream sync)
+          path: device
+          submodules: recursive
+      - uses: actions/checkout@v4
+        with:
+          repository: UniXNU/UniXNU
+          ref: dff276535db3ac394f628cec58a718cd46c20ac2 # official framework main (full upstream sync)
+          path: UniXNU
+          submodules: recursive
+      - uses: actions/checkout@v4
+        with:
+          repository: UniXNU/uefi-sheng
+          ref: 66421cb7bb5694843aec8de1ca3d1de4c20cca38 # pinned: uefi-sheng main, unchanged since 2026-11-01
+          path: uefi-sheng
+          submodules: recursive
+      - name: repair Mesa patch header
+        # UniXNU 82b847c: turnip-frame-diagnostics.patch creates tu_frame_diagnostic.h without the "new file mode"
+        # line, so git apply stops at dev/null. UniXNU e7c359c adds exactly that line; add it here for the pinned revision.
+        working-directory: UniXNU
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          path = pathlib.Path('patches/mesa/turnip-frame-diagnostics.patch')
+          head = 'diff --git a/src/freedreno/vulkan/tu_frame_diagnostic.h b/src/freedreno/vulkan/tu_frame_diagnostic.h\n--- /dev/null\n'
+          text = path.read_text()
+          if text.startswith(head):
+              path.write_text(text.replace(head, head.replace('\n--- ', '\nnew file mode 100644\n--- ', 1), 1))
+              print('added the new file mode line')
+          elif 'new file mode 100644' in text.splitlines()[1]:
+              print('already has the new file mode line')
+          else:
+              raise SystemExit('unexpected header of ' + str(path))
+          PY
+      - name: sheng ABL device tree (0x218 symbols)
+        # Official main's sheng-abl-dtb.py adds splash_region via fdtput; the result carries no
+        # /__symbols__ (dtc without -@), so ABL's dtbo_a overlay fixups all fail and it returns to
+        # fastboot (the black screen we proved on the real device). Mirror niuzicheng666's
+        # fetch-babylon-abldtb.py: copy the vendor_boot base tree that carries __symbols__, select
+        # msm-id 0x218 (this handset ABL "Chiptype: 536"), overwrite build/sheng/sheng.dtb, then add
+        # the step to board.toml preflight AFTER check-sheng.py.
+        run: |
+          curl -fsSL -o device/scripts/fetch-sheng-abldtb.py \
+            "https://raw.githubusercontent.com/niuzicheng666-source/UniXNU-sheng/b87a4cb89377914fdb0e11482a3e9221491db817/scripts/fetch-babylon-abldtb.py"
+          python3 - <<'PY'
+          import pathlib
+          p = pathlib.Path('device/scripts/fetch-sheng-abldtb.py')
+          t = p.read_text()
+          t = t.replace('EXPECTED_MSM_ID = (0x207, 0x20000)',
+                        'EXPECTED_MSM_ID = (0x218, 0x20000)  # this handset: ABL "Chiptype: 536"')
+          t = t.replace("OUTPUT = Path('build/babylon/babylon.dtb')",
+                        "OUTPUT = Path('build/sheng/sheng.dtb')")
+          p.write_text(t)
+          b = pathlib.Path('device/board.toml')
+          bt = b.read_text()
+          old = '"scripts/import-sheng-uefi.py", "scripts/check-sheng.py"]'
+          new = '"scripts/import-sheng-uefi.py", "scripts/check-sheng.py", "scripts/fetch-sheng-abldtb.py"]'
+          if old not in bt:
+              raise SystemExit('board.toml preflight anchor not found')
+          b.write_text(bt.replace(old, new, 1))
+          print('fetch-sheng-abldtb.py added AFTER check-sheng.py; board.toml preflight patched')
+          PY
+      - name: tools
+        run: |
+          brew install dtc llvm lld cmake mtools ninja glslang shaderc spirv-tools bison pkgconf rustup blacktop/tap/ipsw
+          {
+            echo "$HOME/.cargo/bin"
+            echo "/opt/homebrew/opt/llvm/bin"
+            echo "/opt/homebrew/opt/lld/bin"
+            echo "/opt/homebrew/opt/bison/bin"
+          } >> "$GITHUB_PATH"
+          rustup toolchain install 1.98.0 --profile minimal --component rust-src
+          # Fail fast, naming the tool, before forty minutes of build.
+          ok=1
+          for t in clang xcodebuild make git ninja cmake dtc fdtget fdtput aea compression_tool \
+                   mformat mcopy ipsw; do
+            command -v "$t" >/dev/null || { echo "missing tool: $t"; ok=0; }
+          done
+          for t in lld-link llvm-lib llvm-rc llvm-nm llvm-objcopy; do
+            [ -f "/opt/homebrew/opt/llvm/bin/$t" ] || [ -f "/opt/homebrew/opt/lld/bin/$t" ] || { echo "missing tool: $t"; ok=0; }
+          done
+          [ "$ok" = 1 ]
+      - name: WCN7850 firmware
+        # firmware/wcn7850 holds only the manifest; the binaries stay out of Git. The pinned linux-firmware commit carries
+        # exactly the files the manifest pins (sizes and SHA-256 checked below; any difference stops the run).
+        working-directory: device
+        env:
+          LINUX_FIRMWARE: 575bbe3f83565d18caa73e9b9458f754dd286f48 # linux-firmware: ath12k WCN7850 hw2.0 update board-2.bin
+        run: |
+          for name in amss.bin m3.bin board-2.bin; do
+            curl -fsSL --retry 3 -o "firmware/wcn7850/$name" \
+              "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/ath12k/WCN7850/hw2.0/$name?id=$LINUX_FIRMWARE" ||
+            curl -fsSL --retry 3 -o "firmware/wcn7850/$name" \
+              "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/$LINUX_FIRMWARE/ath12k/WCN7850/hw2.0/$name"
+          done
+          python3 - <<'PY'
+          import hashlib, json, pathlib
+          folder = pathlib.Path('firmware/wcn7850')
+          for name, want in json.loads((folder / 'manifest.json').read_text())['files'].items():
+              data = (folder / name).read_bytes()
+              digest = hashlib.sha256(data).hexdigest()
+              if len(data) != want['bytes'] or digest != want['sha256']:
+                  raise SystemExit(f'{name}: {len(data)} bytes sha256 {digest} differs from firmware/wcn7850/manifest.json')
+              print(f'{name}: {len(data)} bytes sha256 {digest} matches the manifest')
+          PY
+      - name: device inputs
+        # The runtime step runs before the firmware step, so inputs a developer checkout already holds are fetched here:
+        # the proprietary-files.txt entries from its pinned @fetch mirror (SHA-256 checked) and the sources Ath12kWifi
+        # locks in tools/source-lock.json (commits and archive SHA-256 checked by fetch-sources.py).
+        working-directory: device
+        run: |
+          python3 scripts/extract-files.py
+          python3 scripts/extract-files.py --check
+          # fetch-sources.py clones with --sparse (cone mode by default in current git), then runs
+          # `sparse-checkout add` with the lock's leading-slash patterns, which cone mode rejects. Create the two
+          # locked clones in non-cone mode first; fetch-sources.py then verifies their commits and contents.
+          python3 - <<'PY'
+          import json, pathlib, subprocess
+          root = pathlib.Path('drivers/Ath12kWifi')
+          lock = json.loads((root / 'tools/source-lock.json').read_text())
+          for name in ('linux', 'freebsd'):
+              source, directory = lock[name], root / 'deps' / name
+              if directory.exists():
+                  continue
+              directory.parent.mkdir(parents=True, exist_ok=True)
+              subprocess.run(['git', 'clone', '--depth', '1', '--branch', source['ref'], '--filter=blob:none', '--sparse',
+                              source['url'], str(directory)], check=True)
+              subprocess.run(['git', '-C', str(directory), 'sparse-checkout', 'set', '--no-cone', *source['paths']], check=True)
+          PY
+          python3 drivers/Ath12kWifi/tools/fetch-sources.py
+      - name: platform seed
+        env:
+          seed: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
+        run: |
+          if ! [[ "$seed" =~ ^[0-9a-fA-F]{8}$ ]]; then
+            echo 'Set the repository secret UNIXNU_UNIQUE_CHIP_ID: the platform seed of the device, 8 hex digits.' >&2
+            exit 1
+          fi
+      - name: seed cache identity
+        id: seed-key
+        env:
+          SEED: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, os
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write('key=data-seed-v1-' + hashlib.sha256(os.environ['SEED'].encode()).hexdigest()[:16] + '\n')
+          PY
+      - uses: actions/cache/restore@v4
+        id: data-cache
+        if: inputs.os == '27'
+        with:
+          path: |
+            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/data.dbr
+            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/inputs.json
+          key: ${{ steps.seed-key.outputs.key }}-${{ inputs.os }}
+      - name: prepare preserved Data seed
+        if: inputs.os == '27'
+        env:
+          INIT_DATA: ${{ inputs.init_data }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, urllib.request
+          inputs = json.loads(pathlib.Path(os.environ['GITHUB_EVENT_PATH']).read_text())['inputs']
+          path = pathlib.Path('UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/data.dbr')
+          url, digest = inputs.get('data_seed_url', ''), inputs.get('data_seed_sha256', '').lower()
+          if url:
+              print('::add-mask::' + url)
+              if not url.startswith('https://') or len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
+                  raise SystemExit('A seed URL requires HTTPS and its SHA-256')
+              with urllib.request.urlopen(url, timeout=120) as source:
+                  data = source.read(64 * 1024 * 1024 + 1)
+              if len(data) > 64 * 1024 * 1024 or hashlib.sha256(data).hexdigest() != digest:
+                  raise SystemExit('Seed size or SHA-256 mismatch')
+              if path.exists() and path.read_bytes() != data:
+                  raise SystemExit('Saved seed differs; preserve and inspect it instead of replacing this installation')
+              path.parent.mkdir(parents=True, exist_ok=True)
+              path.write_bytes(data)
+          if not path.is_file() and os.environ['INIT_DATA'] != 'true':
+              raise SystemExit('No saved seed. Supply the ORIGINAL seed for an existing installation, or select init_data for a FIRST installation')
+          PY
+      - name: package
+        working-directory: device
+        env:
+          UNIXNU_UNIQUE_CHIP_ID: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
+          GITHUB_TOKEN: ${{ github.token }}
+          INIT_DATA: ${{ inputs.init_data }}
+          OS_PROFILE: ${{ inputs.os }}
+        run: |
+          args=(--os "$OS_PROFILE" --uefi ../uefi-sheng)
+          if [ "$OS_PROFILE" = 27 ] && [ "$INIT_DATA" = true ]; then
+            args+=(--init-data)
+          fi
+          scripts/package.sh "${args[@]}"
+      - uses: actions/cache/save@v4
+        if: always() && inputs.os == '27' && steps.data-cache.outputs.cache-hit != 'true' && hashFiles('UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/data.dbr') != ''
+        with:
+          path: |
+            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/data.dbr
+            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/inputs.json
+          key: ${{ steps.seed-key.outputs.key }}-${{ inputs.os }}
+      - name: installation seed backup
+        if: always() && inputs.os == '27' && hashFiles('UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/data.dbr') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: installation-seed-${{ inputs.os }}
+          retention-days: 1
+          path: |
+            UniXNU/out/sheng/*/*/runtime/data.dbr
+            UniXNU/out/sheng/*/*/runtime/inputs.json
+      - name: images
+        uses: actions/upload-artifact@v4
+        with:
+          name: images-${{ inputs.os }}
+          retention-days: 1
+          if-no-files-found: error
+          path: |
+            UniXNU/out/sheng/*/*/boot/boot.img
+            UniXNU/out/sheng/*/*/payload/payload.img
+            UniXNU/out/sheng/*/*/kernel/kernel.macho
+            UniXNU/out/sheng/*/*/package.manifest.json
