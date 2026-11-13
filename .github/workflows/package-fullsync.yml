@@ -310,30 +310,6 @@ jobs:
           b.write_text(bt.replace(old, new, 1))
           print('fetch-sheng-abldtb.py added AFTER check-sheng.py; board.toml preflight patched')
           PY
-      - name: assert ABL dtb (0x218 + __symbols__)
-        # The DTB step overwrites build/sheng/sheng.dtb AFTER check-sheng.py
-        # validated the stock tree, so the validated file is not the shipped one.
-        # Assert the shipped tree is really the vendor_boot 0x218 base tree with a
-        # /__symbols__ node; otherwise ABL's dtbo overlay fails and the handset
-        # bounces back to fastboot (the original black-screen cause).
-        run: |
-          python3 - <<'PY'
-          import pathlib
-          p = pathlib.Path('device/build/sheng/sheng.dtb')
-          if not p.is_file():
-              raise SystemExit('sheng.dtb missing: the ABL dtb step produced nothing')
-          data = p.read_bytes()
-          problems = []
-          if data[:4] != bytes([0xd0, 0x0d, 0xfe, 0xed]):
-              problems.append('wrong fdt magic')
-          if b'__symbols__\x00' not in data:
-              problems.append('no __symbols__ node (ABL dtbo overlay would fail)')
-          if len(data) < 400000:
-              problems.append('only %d bytes; the vendor_boot 0x218 tree is ~506 KB' % len(data))
-          if problems:
-              raise SystemExit('ABL dtb assertion failed: ' + '; '.join(problems))
-          print('abl dtb ok: %d bytes, __symbols__ present' % len(data))
-          PY
       - name: tools
         run: |
           brew install dtc llvm lld cmake mtools ninja glslang shaderc spirv-tools bison pkgconf rustup blacktop/tap/ipsw
@@ -466,6 +442,31 @@ jobs:
             args+=(--init-data)
           fi
           scripts/package.sh "${args[@]}"
+      - name: assert ABL dtb (0x218 + __symbols__)
+        # The ABL step only installs the fetcher into board.toml preflight, so the
+        # tree is produced during `package`. It overwrites build/sheng/sheng.dtb
+        # AFTER check-sheng.py validated the stock tree, i.e. the validated file is
+        # not the shipped one. Assert the shipped tree here, right after package and
+        # before anything is cached/uploaded: a tree without /__symbols__ makes
+        # ABL's dtbo overlay fail and bounces the handset back to fastboot.
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          p = pathlib.Path('device/build/sheng/sheng.dtb')
+          if not p.is_file():
+              raise SystemExit('sheng.dtb missing: the ABL dtb step produced nothing')
+          data = p.read_bytes()
+          problems = []
+          if data[:4] != bytes([0xd0, 0x0d, 0xfe, 0xed]):
+              problems.append('wrong fdt magic')
+          if b'__symbols__\x00' not in data:
+              problems.append('no __symbols__ node (ABL dtbo overlay would fail)')
+          if len(data) < 400000:
+              problems.append('only %d bytes; the vendor_boot 0x218 tree is ~506 KB' % len(data))
+          if problems:
+              raise SystemExit('ABL dtb assertion failed: ' + '; '.join(problems))
+          print('abl dtb ok: %d bytes, __symbols__ present' % len(data))
+          PY
       - uses: actions/cache/save@v4
         if: always() && inputs.os == '27' && steps.data-cache.outputs.cache-hit != 'true' && hashFiles('UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/data.dbr') != ''
         with:
