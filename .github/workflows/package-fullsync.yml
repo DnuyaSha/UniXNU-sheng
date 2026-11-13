@@ -344,6 +344,63 @@ jobs:
               print('baseline: dwc3 injector hooked before kernel build')
           PY
           bash -n UniXNU/scripts/dwc3-inject.sh
+      - name: usb diagnostics (usb=2 register sampling + log-sys=1)
+        # The QcomDwc3 driver is already in this build: build-gop-legacy-display-27.py
+        # compiles drivers/QcomDwc3/QcomDwc3.cpp and package/UsbProbe.cpp
+        # unconditionally, package/LegacyDisplayProbe.cpp calls the weak_import
+        # sheng_usb_probe(), and kernel_args already carry usb=1.
+        # What is missing is visibility: board.toml never sets log-sys, so none of the
+        # native_usb_stats [usb] boot rows are printed, and usb=1 performs no register
+        # sampling. usb=2 adds it (usb=3 would also take the controller off the bus and
+        # back once).
+        # Idempotent, and it only rewrites the kernel_args arrays that already carry usb.
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          p = pathlib.Path('device/board.toml')
+          t = p.read_text()
+          pieces = t.split('"kernel_args" = [')
+          if len(pieces) < 2:
+              raise SystemExit('usb diagnostics: no kernel_args array in board.toml')
+          out = [pieces[0]]
+          touched = 0
+          for chunk in pieces[1:]:
+              body, brk, tail = chunk.partition(']')
+              if not brk:
+                  raise SystemExit('usb diagnostics: unterminated kernel_args array')
+              args = [a.strip() for a in body.split(',')]
+              if '"usb=1"' in args or '"usb=2"' in args:
+                  args = ['"usb=2"' if a == '"usb=1"' else a for a in args]
+                  if '"log-sys=1"' not in args:
+                      args.append('"log-sys=1"')
+                  touched += 1
+                  out.append('"kernel_args" = [' + ', '.join(args) + ']' + tail)
+              else:
+                  out.append('"kernel_args" = [' + body + ']' + tail)
+          if not touched:
+              raise SystemExit('usb diagnostics: no kernel_args array carries usb=1')
+          t2 = ''.join(out)
+          if t2 != t:
+              p.write_text(t2)
+          print('usb diagnostics: %d kernel_args arrays -> usb=2 + log-sys=1' % touched)
+          PY
+          python3 - <<'PY'
+          import pathlib
+          t = pathlib.Path('device/board.toml').read_text()
+          if '"usb=1"' in t:
+              raise SystemExit('usb diagnostics: usb=1 still present')
+          hits = 0
+          for chunk in t.split('"kernel_args" = [')[1:]:
+              body = chunk.split(']')[0]
+              args = [a.strip() for a in body.split(',')]
+              if '"usb=2"' in args:
+                  hits += 1
+                  if '"log-sys=1"' not in args:
+                      raise SystemExit('usb diagnostics: log-sys=1 missing')
+          if hits != 2:
+              raise SystemExit('usb diagnostics: expected 2 arrays with usb=2, got %d' % hits)
+          print('usb diagnostics verified: %d arrays carry usb=2 + log-sys=1' % hits)
+          PY
       - name: tools
         run: |
           brew install dtc llvm lld cmake mtools ninja glslang shaderc spirv-tools bison pkgconf rustup blacktop/tap/ipsw
