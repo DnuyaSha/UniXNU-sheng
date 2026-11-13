@@ -20,16 +20,6 @@ on:
         description: "Create a NEW installation seed if no saved seed exists (iPadOS 27 only)"
         type: boolean
         default: false
-      data_seed_url:
-        description: "Optional original data.dbr URL for an existing installation; otherwise use the saved cache"
-        type: string
-      data_seed_sha256:
-        description: "Required SHA-256 when data_seed_url is supplied"
-        type: string
-      framework:
-        description: "Compatibility input (ignored); the UniXNU pin is fixed in the checkout"
-        type: string
-        required: false
 
 permissions:
   contents: read
