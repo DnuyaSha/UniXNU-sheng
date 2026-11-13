@@ -83,6 +83,30 @@ jobs:
               else:
                   raise SystemExit(rel + ': unexpected SoC pin; inspect feeds.toml')
           PY
+      - name: patch fileset reference stubs (device hook prefixes)
+        # PIT (run 43397482308): build-fileset-release-reference.py auto-stubs only
+        # native_* undefined weak symbols. Device main's newer code also references
+        # cs_native4k_* (BootLog digests), iokit_physical_descriptor_*,
+        # ml_static_mfree_prepare and sheng_* probes (ethernet, software_aes), so the
+        # comparison kernel's second link failed and archive-20 aborted the run.
+        # The comparison kernel never runs - the prelink step only reads its layout -
+        # so extending the stub prefix list is safe.
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          p = pathlib.Path('UniXNU/scripts/build-fileset-release-reference.py')
+          t = p.read_text()
+          old = 'native_[a-z0-9_]+|boot_log_rounds|boot_cache_input_capture'
+          new = ('native_[a-z0-9_]+|cs_native4k_[a-z0-9_]+|iokit_[a-z0-9_]+|ml_[a-z0-9_]+|'
+                 'sheng_[a-z0-9_]+|boot_log_rounds|boot_cache_input_capture')
+          if 'cs_native4k_[a-z0-9_]+' in t:
+              print('fileset reference stubs: already patched')
+          elif old not in t:
+              raise SystemExit('fileset reference: stub regex anchor not found')
+          else:
+              p.write_text(t.replace(old, new, 1))
+              print('fileset reference stubs: prefixes extended (cs_native4k/iokit/ml/sheng)')
+          PY
       - name: note on upstream PR 229 (not applied)
         # PR #229 (stoicneko: ipsw AEA decrypt on non-macOS hosts) conflicts with
         # framework main's scripts/unixnu/ipsw.py, and both recovery attempts left
