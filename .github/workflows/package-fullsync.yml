@@ -75,10 +75,13 @@ jobs:
           for rel in ('device/feeds.toml', 'device/unixnu.lock'):
               p = pathlib.Path(rel)
               t = p.read_text()
-              if OLD not in t:
-                  raise SystemExit(rel + ': old SoC pin not found')
-              p.write_text(t.replace(OLD, NEW))
-              print(rel + ': SoC pin ' + OLD[:8] + ' -> ' + NEW[:8])
+              if OLD in t:
+                  p.write_text(t.replace(OLD, NEW))
+                  print(rel + ': SoC pin ' + OLD[:8] + ' -> ' + NEW[:8])
+              elif NEW in t:
+                  print(rel + ': already on ' + NEW[:8])
+              else:
+                  raise SystemExit(rel + ': unexpected SoC pin; inspect feeds.toml')
           PY
       - name: cherry-pick upstream PR 229 (ipsw AEA decrypt on non-mac hosts)
         # Upstream follow-up (stoicneko, mergeable): lets ./unixnu build userdata
@@ -93,6 +96,48 @@ jobs:
             git cherry-pick --abort 2>/dev/null || true
             echo "PR #229 cherry-pick skipped; stock ipsw.py kept"
           }
+      - name: patch adreno inputs retry (503)
+        # PIT: archive-12-fetch-adreno-inputs.py pulls SHA-pinned files from
+        # raw.githubusercontent.com / chromium.googlesource.com with a single
+        # attempt (timeout 30, 4 threads); those hosts intermittently answer 503
+        # and killed earlier runs. Patch idempotently: 5 attempts, exponential
+        # backoff, timeout 60, 2 threads. Hash checks untouched.
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          p = pathlib.Path('UniXNU/scripts/fetch-adreno-inputs.py')
+          lines = p.read_text().splitlines()
+          if any('# UniXNU sheng CI patch' in line for line in lines):
+              print('already patched')
+          else:
+              out = []
+              index = 0
+              while index < len(lines):
+                  line = lines[index]
+                  if 'urlopen(request, timeout=30) as response' in line:
+                      indent = line[:len(line) - len(line.lstrip())]
+                      out.append(indent + '# UniXNU sheng CI patch: 503 retry, 5 attempts, 60 s timeout')
+                      out.append(indent + 'for attempt in range(5):')
+                      out.append(indent + '    try:')
+                      out.append(indent + '        with urllib.request.urlopen(request, timeout=60) as response:')
+                      out.append(indent + '            data = response.read()')
+                      out.append(indent + '        break')
+                      out.append(indent + '    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:')
+                      out.append(indent + '        if attempt == 4:')
+                      out.append(indent + '            raise')
+                      out.append(indent + '        print("retry %d/5 after %s: %s" % (attempt + 1, error, path.name), flush=True)')
+                      out.append(indent + '        time.sleep(2 ** attempt)')
+                      index += 2
+                      continue
+                  out.append(line)
+                  index += 1
+              text = chr(10).join(out) + chr(10)
+              text = text.replace('import urllib.parse', 'import urllib.error' + chr(10) + 'import urllib.parse', 1)
+              text = text.replace('import urllib.request', 'import urllib.request' + chr(10) + 'import time', 1)
+              text = text.replace('max_workers=4', 'max_workers=2', 1)
+              p.write_text(text)
+              print('adreno fetch patched: 5 retries, timeout 60, 2 threads')
+          PY
       - name: repair Mesa patch header
         # UniXNU 82b847c: turnip-frame-diagnostics.patch creates tu_frame_diagnostic.h without the "new file mode"
         # line, so git apply stops at dev/null. UniXNU e7c359c adds exactly that line; add it here for the pinned revision.
