@@ -90,7 +90,8 @@ jobs:
         # 43386319771 died on "SyntaxError: <<<<<<< HEAD"). It only helps non-macOS
         # hosts; our packaging/userdata builds run on macOS where /usr/bin/aea is
         # native, so it is tracked upstream and deliberately not applied here.
-        run: echo "PR #229 tracked upstream, not applied (conflicts with framework main; no value on macOS)"
+        run: |
+          echo "PR #229 tracked upstream, not applied (conflicts with framework main; no value on macOS)"
       - name: patch adreno inputs retry (503)
         # PIT: archive-12-fetch-adreno-inputs.py pulls SHA-pinned files from
         # raw.githubusercontent.com / chromium.googlesource.com with a single
