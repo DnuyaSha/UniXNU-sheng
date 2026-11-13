@@ -84,35 +84,43 @@ jobs:
                   raise SystemExit(rel + ': unexpected SoC pin; inspect feeds.toml')
           PY
       - name: device hook weak stubs (macOS-profile-only symbols)
-        # PIT (run 43406736873): the DEVELOPMENT kernel link fails on 16 weak imports
-        # that device main's newer code references but only the macOS 27.3 profile
-        # patches provide (cssha-digest-time, memwired-kc-segment-release,
-        # gpupool-device-pager-close). Two more (sheng_ethernet_probe,
-        # sheng_software_aes_probe) live in device package files that this archive
-        # list does not compile. arm64e cannot leave an authenticated pointer to an
-        # undefined weak symbol, so provide weak defaults (project convention).
+        # PIT (run 43406736873): the DEVELOPMENT kernel link fails on 16 weak imports.
+        # They are NOT all macOS-only. Verified against the sources:
+        #   * 7 hooks HAVE real implementations (device SourceStorage.cpp:264,
+        #     SourceRootBinding.cpp:68, BootWatchdogPolicy.c:95; framework
+        #     drivers/RamBlock/NativeRamBlock.cpp:693/712). They are the UFS/root
+        #     start path (bsd_init, kern_exec, IOKitBSDInit call them); stubbing
+        #     them would disable SourceStorage and root verification, so instead
+        #     force the linker to pull their archive members with -u.
+        #   * 9 are genuinely macOS-only or optional: cs_native4k_* (CS digest
+        #     timing, BootLog.c declares them as weak_import arrays), the
+        #     memwired/pager-close hooks from the macOS 27.3 profile patches, the
+        #     legacy request layout table (has the ios17 fallback), and the
+        #     macOS-only Ethernet / software AES probes (LegacyDisplayProbe.cpp
+        #     itself comments them "macOS builds only"). arm64e cannot leave an
+        #     authenticated pointer to an undefined weak symbol, so these get
+        #     weak defaults (project convention).
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python3 - <<'PY'
           import os, pathlib, subprocess
-          names = [
+          # macOS-only / optional hooks: safe to default (zero data, functions report absence).
+          data_names = [
               'cs_native4k_digest_bytes', 'cs_native4k_digest_cpu',
               'cs_native4k_digest_wall', 'cs_native4k_record_ticks',
+              'native_legacy_request_layout',
+          ]
+          func_names = [
               'iokit_physical_descriptor_close_notify',
               'ml_static_mfree_prepare',
-              'native_legacy_request_layout',
-              'native_ram_block_gpu_addon', 'native_ram_block_volume_seed',
-              'native_source_storage_start',
-              'native_verified_block_manifest_sha384',
-              'native_verified_block_root_authorized',
-              'native_verified_block_volume_device',
-              'sheng_boot_watchdog_policy',
               'sheng_ethernet_probe', 'sheng_software_aes_probe',
           ]
-          src = ['/* weak defaults for hooks this build combination cannot provide */',
+          src = ['/* weak defaults for macOS-only / optional hooks (zero data, absent functions) */',
                  '#define WEAK __attribute__((weak, visibility("hidden")))']
-          for name in names:
+          for name in data_names:
+              src.append('WEAK unsigned long %s[8];' % name)
+          for name in func_names:
               src.append('WEAK long %s(void) { return 0; }' % name)
           src.append('WEAK long native_hooks_stub_marker(void) { return 0; }')
           path = pathlib.Path('ci-device-stubs.c')
@@ -130,8 +138,18 @@ jobs:
           p = pathlib.Path('UniXNU/scripts/build-xnu-4k-baseline.sh')
           t = p.read_text()
           old = 'KERNEL_EXTRA_ARCHIVES="-L$KERNEL_SDKROOT/usr/local/lib/kernel -lfirehose_kernel $CRYPTO_ARCHIVE"'
+          forced = [
+              'native_source_storage_start',
+              'native_verified_block_root_authorized',
+              'native_verified_block_manifest_sha384',
+              'native_verified_block_volume_device',
+              'native_ram_block_volume_seed',
+              'native_ram_block_gpu_addon',
+              'sheng_boot_watchdog_policy',
+          ]
           new = ('KERNEL_EXTRA_ARCHIVES="-L$KERNEL_SDKROOT/usr/local/lib/kernel -lfirehose_kernel $CRYPTO_ARCHIVE'
-                 '${CI_DEVICE_STUBS:+ -Wl,-force_load,$CI_DEVICE_STUBS}"')
+                 + ''.join(' -Wl,-u,_%s' % n for n in forced)
+                 + '${CI_DEVICE_STUBS:+ -Wl,-force_load,$CI_DEVICE_STUBS}"')
           if 'CI_DEVICE_STUBS' in t:
               print('baseline script: already patched')
           elif old not in t:
