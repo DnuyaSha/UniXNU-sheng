@@ -83,34 +83,14 @@ jobs:
               else:
                   raise SystemExit(rel + ': unexpected SoC pin; inspect feeds.toml')
           PY
-      - name: cherry-pick upstream PR 229 (ipsw AEA decrypt on non-mac hosts)
-        # Upstream follow-up (stoicneko, mergeable): lets ./unixnu build userdata
-        # decrypt AEA images via the ipsw tool on hosts without /usr/bin/aea.
-        # PIT: framework main has moved scripts/unixnu/ipsw.py since the PR branch,
-        # so the cherry-pick conflicts; `cherry-pick --no-commit` then leaves
-        # <<<<<<< markers that break `unixnu` with SyntaxError (run 43385171421).
-        # Guard: detect markers, abort, restore; macOS's native aea path is unchanged.
-        continue-on-error: true
-        working-directory: UniXNU
-        run: |
-          git fetch --depth=1 origin pull/229/head:pr229 || { echo "PR #229 not fetchable"; exit 0; }
-          if git cherry-pick --no-commit pr229; then
-            if grep -rq '<<<<<<<' scripts/ 2>/dev/null; then
-              git cherry-pick --abort 2>/dev/null || true
-              git checkout -- .
-              echo "PR #229 conflicts with framework main; stock ipsw.py restored"
-            else
-              git commit -m "cherry-pick UniXNU PR #229 (ipsw AEA non-mac)"
-              echo "PR #229 applied cleanly"
-            fi
-          else
-            git cherry-pick --abort 2>/dev/null || true
-            git checkout -- .
-            echo "PR #229 skipped; stock ipsw.py kept"
-          fi
-          if grep -rq '<<<<<<<' scripts/ 2>/dev/null; then
-            echo "conflict markers still present"; git checkout -- .; exit 1
-          fi
+      - name: note on upstream PR 229 (not applied)
+        # PR #229 (stoicneko: ipsw AEA decrypt on non-macOS hosts) conflicts with
+        # framework main's scripts/unixnu/ipsw.py, and both recovery attempts left
+        # conflict markers / unmerged paths in the tree (runs 43385171421 and
+        # 43386319771 died on "SyntaxError: <<<<<<< HEAD"). It only helps non-macOS
+        # hosts; our packaging/userdata builds run on macOS where /usr/bin/aea is
+        # native, so it is tracked upstream and deliberately not applied here.
+        run: echo "PR #229 tracked upstream, not applied (conflicts with framework main; no value on macOS)"
       - name: patch adreno inputs retry (503)
         # PIT: archive-12-fetch-adreno-inputs.py pulls SHA-pinned files from
         # raw.githubusercontent.com / chromium.googlesource.com with a single
