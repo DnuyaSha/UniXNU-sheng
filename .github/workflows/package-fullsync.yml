@@ -94,15 +94,15 @@ jobs:
           p = pathlib.Path('device/scripts/build-gop-legacy-display-27.py')
           t = p.read_text()
           anchor = "    cmd += ['-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter', '-Wno-unnecessary-virtual-specifier', '-Wno-c99-designator',\n            '-Wno-reorder-init-list', '-Wno-deprecated-enum-enum-conversion', '-I', str(ROOT / '.cache/xnu-work/osfmk'), *extra]"
-          assert anchor in t, 'compile_cpp tail anchor not found'
+          assert t.count(anchor) == 1, 'compile_cpp anchor not unique: %d' % t.count(anchor)
           new = anchor.replace("*extra]", "*extra, '-Os']")
-          assert new != anchor and new in t
           t = t.replace(anchor, new, 1)
+          assert new in t, 'compile_cpp replacement did not land'
           anchor_c = "    cmd += ['-Wall', '-Wextra', '-Werror', '-mgeneral-regs-only', '-I', str(ROOT / '.cache/xnu-work/osfmk'), '-I', str(ROOT / 'kits/sheng')]"
-          assert anchor_c in t, 'compile_c tail anchor not found'
+          assert t.count(anchor_c) == 1, 'compile_c anchor not unique: %d' % t.count(anchor_c)
           new_c = anchor_c.replace("'-I', str(ROOT / 'kits/sheng')]", "'-I', str(ROOT / 'kits/sheng'), '-Os']")
-          assert new_c != anchor_c and new_c in t
           t = t.replace(anchor_c, new_c, 1)
+          assert new_c in t, 'compile_c replacement did not land'
           p.write_text(t)
           print('build-gop-legacy-display-27.py: compile_cpp and compile_c now emit -Os')
           PY
