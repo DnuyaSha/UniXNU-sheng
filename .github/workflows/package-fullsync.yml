@@ -74,7 +74,7 @@ jobs:
               else:
                   raise SystemExit(rel + ': unexpected SoC pin; inspect feeds.toml')
           PY
-      - name: compile native board objects with -Os (layout slack)
+      - name: compile native board objects with -Oz (layout slack)
         # MEASURED (run 43571646791 + baseline kernel.macho of run 43449862147):
         # the native code window is __DATA.va - align(max end of retained
         # kext __TEXT_EXEC). Baseline measured: window 11968 KiB, used 11792 KiB,
@@ -86,7 +86,7 @@ jobs:
         # builder already answers the same pressure: build-gop-legacy-display-27.py
         # line 735 compiles the VPU objects with '-Os' and the comment
         # "native text is short of room". Extend that official remedy to every
-        # board object compiled by this script; -Os over -O2 frees enough text
+        # board object compiled by this script; -Oz over -O2 frees enough text (run 43590888494: -Os still collided, over_by=0x20000)
         # to cover the ~82 KiB deficit without touching upstream sources or roots.
         run: |
           python3 - <<'PY'
@@ -95,27 +95,27 @@ jobs:
           t = p.read_text()
           anchor = "    cmd += ['-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter', '-Wno-unnecessary-virtual-specifier', '-Wno-c99-designator',\n            '-Wno-reorder-init-list', '-Wno-deprecated-enum-enum-conversion', '-I', str(ROOT / '.cache/xnu-work/osfmk'), *extra]"
           assert t.count(anchor) == 1, 'compile_cpp anchor not unique: %d' % t.count(anchor)
-          new = anchor.replace("*extra]", "*extra, '-Os']")
+          new = anchor.replace("*extra]", "*extra, '-Oz']")
           t = t.replace(anchor, new, 1)
           assert new in t, 'compile_cpp replacement did not land'
           anchor_c = "    cmd += ['-Wall', '-Wextra', '-Werror', '-mgeneral-regs-only', '-I', str(ROOT / '.cache/xnu-work/osfmk'), '-I', str(ROOT / 'kits/sheng')]"
           assert t.count(anchor_c) == 1, 'compile_c anchor not unique: %d' % t.count(anchor_c)
-          new_c = anchor_c.replace("'-I', str(ROOT / 'kits/sheng')]", "'-I', str(ROOT / 'kits/sheng'), '-Os']")
+          new_c = anchor_c.replace("'-I', str(ROOT / 'kits/sheng')]", "'-I', str(ROOT / 'kits/sheng'), '-Oz']")
           t = t.replace(anchor_c, new_c, 1)
           assert new_c in t, 'compile_c replacement did not land'
           p.write_text(t)
-          print('build-gop-legacy-display-27.py: compile_cpp and compile_c now emit -Os')
+          print('build-gop-legacy-display-27.py: compile_cpp and compile_c now emit -Oz')
           PY
           python3 - <<'PY'
           import pathlib
           t = pathlib.Path('device/scripts/build-gop-legacy-display-27.py').read_text()
           import re
-          n = len(re.findall(r"-Os\b", t))
-          assert n >= 3, 'expected at least 3 -Os tokens (2 patched + 1 official VPU), got %d' % n
-          assert "*extra, '-Os']" in t and "kits/sheng'), '-Os']" in t, 'patched anchors missing'
+          n = len(re.findall(r"-Os\b", t)) + len(re.findall(r"-Oz\b", t))
+          assert n >= 3, 'expected at least 3 -Os/-Oz tokens (2 patched -Oz + 1 official VPU -Os), got %d' % n
+          assert "*extra, '-Oz']" in t and "kits/sheng'), '-Oz']" in t, 'patched -Oz anchors missing'
           import ast
           ast.parse(t)
-          print('assertion ok: -Os tokens =', n, '; anchors applied; script parses')
+          print('assertion ok: -Os/-Oz tokens =', n, '; anchors applied; script parses')
           PY
       - name: layout collide diagnostics (print numbers before the exception)
         # Runs 43571646791 and 43586156184 both died at fileset_layout.py:115 with
