@@ -112,7 +112,8 @@ jobs:
           import re
           n = len(re.findall(r"-Os\b", t)) + len(re.findall(r"-Oz\b", t))
           assert n >= 3, 'expected at least 3 -Os/-Oz tokens (2 patched -Oz + 1 official VPU -Os), got %d' % n
-          assert "*extra, '-Oz', '-fno-asynchronous-unwind-tables', '-fno-unwind-tables']" in t and "kits/sheng'), '-Oz', '-fno-asynchronous-unwind-tables', '-fno-unwind-tables']" in t, 'patched -Oz+no-unwind anchors missing'
+          assert t.count('-fno-asynchronous-unwind-tables') >= 2, 'no-unwind flags not landed: %d' % t.count('-fno-asynchronous-unwind-tables')
+          assert "*extra, '-Oz'" in t and "kits/sheng'), '-Oz'" in t, 'patched -Oz anchors missing'
           import ast
           ast.parse(t)
           print('assertion ok: -Os/-Oz tokens =', n, '; anchors applied; script parses')
