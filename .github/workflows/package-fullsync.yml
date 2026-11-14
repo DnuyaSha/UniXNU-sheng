@@ -1,8 +1,9 @@
 name: package
 
-# FULL upstream sync round N+1: official device main + official framework main
+# FULL upstream sync round N+2: official device main + official framework main
 # + sm8550 SoC pin bump (a9f45dc6 -> SoC main 2dc650ca: GeniUart/QupDma/VideoCc/AppsSmmu),
-# + PR #229 cherry-pick, + the sheng ABL 0x218 DTB fix, + build-logs upload.
+# + PR #229 cherry-pick, + the sheng ABL 0x218 DTB fix, + build-logs upload,
+# + restore the 27 profile's default prelink roots (run 43528673031 layout fix).
 #
 # The platform seed comes from the repository secret UNIXNU_UNIQUE_CHIP_ID and
 # is baked into the images, so the run's artifacts belong to one device alone:
@@ -251,6 +252,54 @@ jobs:
               print('already has the new file mode line')
           else:
               raise SystemExit('unexpected header of ' + str(path))
+          PY
+      - name: restore profile default prelink roots (layout fit)
+        # ROOT CAUSE (run 43528673031): device main's board.toml adds an
+        # ["os_overrides"."ipados-27.0.1-24A446"."kernel"."prelink"] section whose
+        # roots retain 13 extra kexts (IOUSBDeviceFamily, AppleUSBXDCI,
+        # AppleUSBDeviceMux, IOUSBHostFamily, AppleUSBXHCI, AppleUSBHub,
+        # AppleUSBHostCompositeDevice, IOUSBHostHIDDevice, IOUSBMassStorageDriver,
+        # IOSCSIArchitectureModelFamily, IOSCSIBlockCommandsDevice,
+        # AppleOnboardSerial, AppleSMC). XnuPrelink places retained kext code
+        # inside native __TEXT_EXEC before the native kernel
+        # (fileset_layout.py: end_kept = max end of retained __TEXT_EXEC), so the
+        # extra kexts pushed native code past the collection's __DATA:
+        # "Native code would collide with collection data". The proven generation
+        # (run 43449862147) used the 31 profile default roots and kept ~160 KiB of
+        # slack. Delete the override so the profile defaults apply again. The USB
+        # host stacks are not needed for this run's diagnostics: QcomDwc3 is not in
+        # the 27 archives list and the native dwc3 probe stays parked
+        # (INCLUDE_DWC3_PROBE=0).
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          p = pathlib.Path('device/board.toml')
+          t = p.read_text()
+          marker = '["os_overrides"."ipados-27.0.1-24A446"."kernel"."prelink"]'
+          if marker not in t:
+              print('board.toml: prelink override absent; nothing to restore')
+          else:
+              start = t.index(marker)
+              # The section ends at the next TOML table header (a line starting with '['
+              # after the roots assignment) or EOF.
+              rest = t[start + len(marker):]
+              nxt = rest.find(chr(10) + '[')
+              end = start + len(marker) + (nxt if nxt >= 0 else len(rest))
+              removed = t[start:end]
+              if '"roots"' not in removed:
+                  raise SystemExit('board.toml: override section without roots; inspect manually')
+              p.write_text(t[:start] + t[end:])
+              print('board.toml: removed 27-profile prelink roots override (%d bytes);'
+                    ' profile defaults (31 roots) restored' % len(removed))
+          PY
+          python3 - <<'PY'
+          # Assertion: after the patch the board must carry no 27-profile prelink
+          # roots, so the framework falls back to profiles/os/ipados-27.0.1-24A446.
+          import pathlib
+          t = pathlib.Path('device/board.toml').read_text()
+          marker = '["os_overrides"."ipados-27.0.1-24A446"."kernel"."prelink"]'
+          assert marker not in t, 'prelink roots override still present'
+          print('assertion ok: 27-profile prelink roots override absent')
           PY
       - name: sheng ABL device tree (0x218 symbols)
         # Official main's sheng-abl-dtb.py adds splash_region via fdtput; the result carries no
