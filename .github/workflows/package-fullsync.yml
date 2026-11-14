@@ -37,13 +37,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: UniXNU/UniXNU-sheng
-          ref: 1108068537d5396edb2c63b2f8c6f5b97b0a4bbc # official device main (full upstream sync)
+          ref: 68800685763d755c368775b848dd703fb3f8a3ce # official device main (full upstream sync)
           path: device
           submodules: recursive
       - uses: actions/checkout@v4
         with:
           repository: UniXNU/UniXNU
-          ref: dff276535db3ac394f628cec58a718cd46c20ac2 # official framework main (full upstream sync)
+          ref: d8210e089792946841ca23a8ff39f3b3641b002f # official framework main (full upstream sync)
           path: UniXNU
           submodules: recursive
       - uses: actions/checkout@v4
@@ -73,6 +73,49 @@ jobs:
                   print(rel + ': already on ' + NEW[:8])
               else:
                   raise SystemExit(rel + ': unexpected SoC pin; inspect feeds.toml')
+          PY
+      - name: compile native board objects with -Os (layout slack)
+        # MEASURED (run 43571646791 + baseline kernel.macho of run 43449862147):
+        # the native code window is __DATA.va - align(max end of retained
+        # kext __TEXT_EXEC). Baseline measured: window 11968 KiB, used 11792 KiB,
+        # slack 160 KiB. The failing run's native kernel has 57354 function_starts
+        # vs 56199 in the proven baseline: +1155 functions ~= +242 KiB at the
+        # measured 215 B/function, over the 160 KiB slack -> fileset_layout.py:115
+        # "Native code would collide with collection data". The recipe used by
+        # compile_cpp/compile_c is -O2 (1085 hits in runtime.log). The official
+        # builder already answers the same pressure: build-gop-legacy-display-27.py
+        # line 735 compiles the VPU objects with '-Os' and the comment
+        # "native text is short of room". Extend that official remedy to every
+        # board object compiled by this script; -Os over -O2 frees enough text
+        # to cover the ~82 KiB deficit without touching upstream sources or roots.
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          p = pathlib.Path('device/scripts/build-gop-legacy-display-27.py')
+          t = p.read_text()
+          anchor = "    cmd += ['-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter', '-Wno-unnecessary-virtual-specifier', '-Wno-c99-designator',\n            '-Wno-reorder-init-list', '-Wno-deprecated-enum-enum-conversion', '-I', str(ROOT / '.cache/xnu-work/osfmk'), *extra]"
+          assert anchor in t, 'compile_cpp tail anchor not found'
+          new = anchor.replace("*extra]", "*extra, '-Os']")
+          assert new != anchor and new in t
+          t = t.replace(anchor, new, 1)
+          anchor_c = "    cmd += ['-Wall', '-Wextra', '-Werror', '-mgeneral-regs-only', '-I', str(ROOT / '.cache/xnu-work/osfmk'), '-I', str(ROOT / 'kits/sheng')]"
+          assert anchor_c in t, 'compile_c tail anchor not found'
+          new_c = anchor_c.replace("'-I', str(ROOT / 'kits/sheng')]", "'-I', str(ROOT / 'kits/sheng'), '-Os']")
+          assert new_c != anchor_c and new_c in t
+          t = t.replace(anchor_c, new_c, 1)
+          p.write_text(t)
+          print('build-gop-legacy-display-27.py: compile_cpp and compile_c now emit -Os')
+          PY
+          python3 - <<'PY'
+          import pathlib
+          t = pathlib.Path('device/scripts/build-gop-legacy-display-27.py').read_text()
+          import re
+          n = len(re.findall(r"-Os\b", t))
+          assert n >= 3, 'expected at least 3 -Os tokens (2 patched + 1 official VPU), got %d' % n
+          assert "*extra, '-Os']" in t and "kits/sheng'), '-Os']" in t, 'patched anchors missing'
+          import ast
+          ast.parse(t)
+          print('assertion ok: -Os tokens =', n, '; anchors applied; script parses')
           PY
       - name: device hook weak stubs (macOS-only hooks; real hooks force-pulled)
         # PIT (run 43406736873): the DEVELOPMENT kernel link fails on 16 weak imports.
@@ -232,8 +275,14 @@ jobs:
               text = text.replace('import urllib.parse', 'import urllib.error' + chr(10) + 'import urllib.parse', 1)
               text = text.replace('import urllib.request', 'import urllib.request' + chr(10) + 'import time', 1)
               text = text.replace('max_workers=4', 'max_workers=2', 1)
+              # Assertion: the three textual replacements must all land; a silent
+              # no-op here produced a failed fetch in earlier runs.
+              assert 'import urllib.error' + chr(10) + 'import urllib.parse' in text, 'urllib.error import not inserted'
+              assert 'import urllib.request' + chr(10) + 'import time' in text, 'time import not inserted'
+              assert 'max_workers=2' in text and 'max_workers=4' not in text, 'max_workers not replaced'
+              assert 'for attempt in range(5):' in text, 'retry loop not inserted'
               p.write_text(text)
-              print('adreno fetch patched: 5 retries, timeout 60, 2 threads')
+              print('adreno fetch patched: 5 retries, timeout 60, 2 threads (assertions ok)')
           PY
       - name: repair Mesa patch header
         # UniXNU 82b847c: turnip-frame-diagnostics.patch creates tu_frame_diagnostic.h without the "new file mode"
