@@ -75,19 +75,17 @@ jobs:
                   raise SystemExit(rel + ': unexpected SoC pin; inspect feeds.toml')
           PY
       - name: compile native board objects with -Oz (layout slack)
-        # MEASURED (run 43571646791 + baseline kernel.macho of run 43449862147):
-        # the native code window is __DATA.va - align(max end of retained
-        # kext __TEXT_EXEC). Baseline measured: window 11968 KiB, used 11792 KiB,
-        # slack 160 KiB. The failing run's native kernel has 57354 function_starts
-        # vs 56199 in the proven baseline: +1155 functions ~= +242 KiB at the
-        # measured 215 B/function, over the 160 KiB slack -> fileset_layout.py:115
-        # "Native code would collide with collection data". The recipe used by
-        # compile_cpp/compile_c is -O2 (1085 hits in runtime.log). The official
-        # builder already answers the same pressure: build-gop-legacy-display-27.py
-        # line 735 compiles the VPU objects with '-Os' and the comment
-        # "native text is short of room". Extend that official remedy to every
-        # board object compiled by this script; -Oz over -O2 frees enough text (run 43590888494: -Os still collided, over_by=0x20000)
-        # to cover the ~82 KiB deficit without touching upstream sources or roots.
+        # Measured failure: run 43601833150, fileset_layout.py:115 collision branch,
+        # over_by=0x10000 (64 KiB), native __TEXT_EXEC=0xbbc000.
+        # This matches run 43595027558: no-unwind gave no executable-budget gain.
+        # Historical notes reported a 11968 KiB window, 11792 KiB baseline usage
+        # and 160 KiB root-segment gap; these are not a consistent slack equation.
+        # Use the actual aligned code_end and __DATA.va for acceptance.
+        # Whole-kernel function counts do not measure board-only code growth.
+        # The 1085 runtime.log -O2 commands were OpenSSL, not board recipes.
+        # The official VPU builder uses -Os: "native text is short of room".
+        # Keep the existing GOP helper experiment; optimize additional independent
+        # builders below. Only a completed prelink can establish layout fit.
         run: |
           python3 - <<'PY'
           import pathlib
@@ -117,6 +115,33 @@ jobs:
           import ast
           ast.parse(t)
           print('assertion ok: -Os/-Oz tokens =', n, '; anchors applied; script parses')
+          PY
+      - name: optimize independent board builders for 24A446
+        if: inputs.os == '27'
+        run: |
+          python3 - <<'PY'
+          import ast
+          import pathlib
+          patches = [
+              ('device/scripts/build-qcom-iris.py', "    (out / (source.stem + '.command.json')).write_text", '    ', 'cmd'),
+              ('UniXNU/scripts/build-arm-driver.py', "(out / 'compile-command.json').write_text", '', 'command'),
+              ('UniXNU/scripts/build-sheng-source-drivers.py', '    return command', '    ', 'command'),
+          ]
+          for rel, marker, indent, argv in patches:
+              p = pathlib.Path(rel)
+              t = p.read_text()
+              assert t.count(marker) == 1, (rel, 'optimization anchor must be unique')
+              lines = [
+                  indent + "if __import__('os').environ.get('UNIXNU_IPSW_BUILD') == '24A446':",
+                  indent + '    ' + argv + ".append('-Oz')",
+                  indent + '    ' + "print('BOARD_OPT', str(source), [v for v in " + argv + " if v.startswith('-O')], file=__import__('sys').stderr, flush=True)",
+              ]
+              replacement = chr(10).join(lines) + chr(10) + marker
+              t = t.replace(marker, replacement, 1)
+              assert replacement in t, (rel, 'optimization replacement missing')
+              ast.parse(t)
+              p.write_text(t)
+              print('Patched independent builder:', rel)
           PY
       - name: layout collide diagnostics (print numbers before the exception)
         # Runs 43571646791 and 43586156184 both died at fileset_layout.py:115 with
