@@ -43,7 +43,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: UniXNU/UniXNU
-          ref: d8210e089792946841ca23a8ff39f3b3641b002f # official framework main (full upstream sync)
+          ref: 0c1bac3d51a3009dca1708b15a5198f4b43d057a # official framework main (full upstream sync)
           path: UniXNU
           submodules: recursive
       - uses: actions/checkout@v4
@@ -115,6 +115,62 @@ jobs:
           import ast
           ast.parse(t)
           print('assertion ok: -Os/-Oz tokens =', n, '; anchors applied; script parses')
+          PY
+      - name: omit USB device mode from the 27 kernel (kexts are not prelinked)
+        if: inputs.os == '27'
+        run: |
+          python3 - <<'PY'
+          """Remove the USB device driver from the 24A446 (27) kernel build.
+
+          The 27 profile does not prelink the AppleUSBXDCI/AppleUSBXHCI kexts: the board's
+          official roots override is dropped because those stacks' __DATA does not fit,
+          and the retained-kext code would also push native code past collection __DATA.
+          XnuPrelink therefore refuses the dwc3 subclass' `.original` absolute targets
+          ("Original target is not retained executable code").  The driver cannot bind a
+          kext that is not in the collection, so the 27 kernel omits the whole device-mode
+          block: QcomDwc3, UsbProbe, the generated ABI headers and the stub adapters.
+          `sheng_usb_probe` is a weak_import hook, so nothing else needs it.
+          """
+          import argparse
+          import ast
+          from pathlib import Path
+          NL = chr(10)
+
+          def apply(source: str) -> str:
+
+              def once(old, new):
+                  nonlocal source
+                  found = source.count(old)
+                  if found != 1:
+                      raise ValueError('USB removal anchor expected once, found %d: %r' % (found, old[:90]))
+                  source = source.replace(old, new, 1)
+              start = '# USB device mode: the native SM8550 subclass of the original AppleUSBXDCI of this fileset.' + NL
+              end = "input_objects += [usb_late, USB_OUT / 'usb-bindings.o', USB_OUT / 'usb-addresses.o', USB_OUT / 'UsbProbe.o']" + NL
+              if source.count(start) != 1 or source.count(end) != 1:
+                  raise ValueError('USB removal block anchors are not unique')
+              first = source.index(start)
+              last = source.index(end, first) + len(end)
+              span = source[first:last]
+              for required in ('OriginalUsbXdciABI', 'OriginalUsbXhciABI', 'usb_bindings', 'usb-addresses.S'):
+                  if required not in span:
+                      raise ValueError('USB removal span does not cover ' + required)
+              note = '# USB device mode is not built for the 27 kernel: the AppleUSBXDCI and AppleUSBXHCI' + NL + '# kexts are not prelinked (their __DATA does not fit), so the native dwc3 subclass' + NL + '# cannot bind them. The usb= kernel argument stays with no driver to consume it.' + NL
+              source = source[:first] + note + source[last:]
+              once("print(f'USB: {len(usb_bindings)} original bindings, {usb_vt} and {xhci_vt} match the original diversities')" + NL, '')
+              once("sources += [KITS / name for name in ('SmmuBypass.h', 'AppsSmmuLock.h', 'UsbProbe.cpp')]", "sources += [KITS / name for name in ('SmmuBypass.h', 'AppsSmmuLock.h')]")
+              once("sources += [USB / 'QcomDwc3.cpp', USB / 'QcomEusb2Phy.h', USB / 'QcomQmpUsb3.h', USB / 'QcomUcsi.h', ROOT / f'scripts/usb-xdci-{BUILD}.json', ROOT / f'scripts/usb-xhci-{BUILD}.json']" + NL, '')
+              for token in ('usb_bindings', 'usb_late', 'QcomDwc3', 'USB_OUT', 'USB / '):
+                  if token in source:
+                      raise ValueError('USB removal left a reference: ' + token)
+              ast.parse(source)
+              return source
+          p = Path('device/scripts/build-gop-legacy-display-27.py')
+          original = p.read_text(encoding='utf-8')
+          patched = apply(original)
+          assert patched != original, "USB removal produced no change"
+          assert 'usb_bindings' not in patched and 'QcomDwc3' not in patched
+          p.write_text(patched, encoding='utf-8')
+          print("USB DEVICE MODE OMITTED (kexts not prelinked)")
           PY
       - name: optimize independent board builders for 24A446
         if: inputs.os == '27'
