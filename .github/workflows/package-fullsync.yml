@@ -95,7 +95,7 @@ jobs:
           t = p.read_text()
           anchor = "    cmd += ['-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter', '-Wno-unnecessary-virtual-specifier', '-Wno-c99-designator',\n            '-Wno-reorder-init-list', '-Wno-deprecated-enum-enum-conversion', '-I', str(ROOT / '.cache/xnu-work/osfmk'), *extra]"
           assert t.count(anchor) == 1, 'compile_cpp anchor not unique: %d' % t.count(anchor)
-          new = anchor.replace("*extra]", "*extra, '-Oz', '-fno-asynchronous-unwind-tables', '-fno-unwind-tables'")
+          new = anchor.replace("*extra]", "*extra, '-Oz', '-fno-asynchronous-unwind-tables', '-fno-unwind-tables']")
           t = t.replace(anchor, new, 1)
           assert new in t, 'compile_cpp replacement did not land'
           anchor_c = "    cmd += ['-Wall', '-Wextra', '-Werror', '-mgeneral-regs-only', '-I', str(ROOT / '.cache/xnu-work/osfmk'), '-I', str(ROOT / 'kits/sheng')]"
